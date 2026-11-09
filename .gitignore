@@ -1,5 +1,5 @@
 # private preferences for this project, loaded alongside CLAUDE.md
-.CLAUDE.local.md
+CLAUDE.local.md
 
 # Devenv
 .devenv*
