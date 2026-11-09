@@ -1,0 +1,13 @@
+# private preferences for this project, loaded alongside CLAUDE.md
+.CLAUDE.local.md
+
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
