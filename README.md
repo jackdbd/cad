@@ -29,16 +29,16 @@ task-list
 ## Blender scripts
 
 ```sh
-blender -b -P subtract-magnet-hole.py -- --help
+blender -b -P blender/subtract-magnet-hole.py -- --help
 ```
 
 ```sh
-blender -b -P subtract-magnet-hole.py -- basetta.stl basetta_con_buco.stl --diameter 5.0 --height 2.0
+blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/basetta.stl --out assets/output/basetta_con_buco.stl --diameter 5.0 --height 2.0
 ```
 
 ```sh
 for f in bases/*.stl; do
-    blender -b -P subtract-magnet-hole.py -- "$f" "magnet_$f" -d 5.0 -H 2.0
+    blender -b -P blender/subtract-magnet-hole.py -- --in "$f" --out "magnet_$f" -d 5.0 -H 2.0
 done
 ```
 
