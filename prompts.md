@@ -17,3 +17,20 @@ blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/basetta.stl -
 
 ---
 
+I would like a script that takes all the STL files from a directory and runs the Blender script on each of them, generating the output files in another directory. The script should be executable and should be able to be run from the repo root.
+
+The directory for the generated files should match the input one, but should be `output` instead of `input`. For example, if the input files are in `assets/input/wood-elf-bases/25x25`, the output files should be generated in `assets/output/wood-elf-bases/25x25`. The shell script should also accept the diameter and height parameters as command line arguments. The filename of the generated file should match the input one, but should be suffixed with `_with_5x2_magnet`, where 5 and 2 are the magnet diameter and height, if I pass `--diameter 5` and `--height 2` as named parameters to the script. If instead I pass `--diameter 6` and `--height 3`, the suffix should be `_with_6x3_magnet`. The script should also create the output directory if it does not exist.
+
+---
+
+I would like to invoke this script from the command line like this:
+
+carve -i assets/input/wood-elf-bases/25x25 -d 6 -H 3
+
+So `convert.sh` should probably be renamed to `carve.sh`.
+
+Please add this as a devenv script too, like `hello` or `task-list`.
+
+---
+
+Update the README.md file to include the new script and its usage. Then commit.

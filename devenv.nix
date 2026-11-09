@@ -1,4 +1,5 @@
 {
+  config,
   pkgs,
   ...
 }:
@@ -27,6 +28,10 @@
   ];
 
   scripts = {
+    carve.exec = ''
+      ${config.devenv.root}/carve.sh "$@"
+    '';
+
     cdoctor.exec = ''
       claude doctor
     '';

@@ -33,19 +33,14 @@ blender -b -P blender/subtract-magnet-hole.py -- --help
 ```
 
 ```sh
-blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/basetta.stl --out assets/output/basetta_con_buco.stl --diameter 5.0 --height 2.0
+blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/base.stl --out assets/output/base_with_hole.stl --diameter 5.0 --height 2.0
 ```
 
-```sh
-for f in bases/*.stl; do
-    blender -b -P blender/subtract-magnet-hole.py -- --in "$f" --out "magnet_$f" -d 5.0 -H 2.0
-done
-```
-
-Make the script execubale with `chmod +x convert.sh`. Then launch it to convert all bases.
+To carve magnet sockets into every STL file in a directory, run `carve` (a devenv script wrapping `carve.sh`). Output goes to the matching `assets/output/...` directory, with a `_with_<diameter>x<height>_magnet` suffix on each filename.
 
 ```sh
-./convert.sh
+carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2
+# -> assets/output/wood-elf-bases/25x25/base 1_with_5x2_magnet.stl, ...
 ```
 
 ## OpenSCAD scripts
@@ -53,7 +48,7 @@ Make the script execubale with `chmod +x convert.sh`. Then launch it to convert 
 First, center the model using `trimesh` (WIP):
 
 ```sh
-python3 -c "import trimesh, sys; m=trimesh.load(sys.argv[1]); m.apply_translation(-m.bounding_box.centroid); m.export(sys.argv[2])" basetta.stl basetta_centrata.stl
+python3 -c "import trimesh, sys; m=trimesh.load(sys.argv[1]); m.apply_translation(-m.bounding_box.centroid); m.export(sys.argv[2])" base.stl basetta_centrata.stl
 ```
 
 Then run the openscad program against the centered model:
