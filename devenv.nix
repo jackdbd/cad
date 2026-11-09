@@ -22,6 +22,7 @@
   packages = with pkgs; [
     claude-code
     git
+    git-lfs
     openscad
   ];
 
