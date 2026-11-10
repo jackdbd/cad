@@ -48,11 +48,11 @@ carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2
 First, center the model using `trimesh` (WIP):
 
 ```sh
-python3 -c "import trimesh, sys; m=trimesh.load(sys.argv[1]); m.apply_translation(-m.bounding_box.centroid); m.export(sys.argv[2])" base.stl basetta_centrata.stl
+python3 -c "import trimesh, sys; m=trimesh.load(sys.argv[1]); m.apply_translation(-m.bounding_box.centroid); m.export(sys.argv[2])" base.stl base_centered.stl
 ```
 
 Then run the openscad program against the centered model:
 
 ```sh
-openscad -o basetta_forata.stl hole-for-magnet.scad
+openscad -o base_with_hole.stl openscad/hole-for-magnet.scad
 ```
