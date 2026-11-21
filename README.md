@@ -135,15 +135,14 @@ devenv tasks run cad:carve-magnet-holes:run
 | `-H`, `--height` | no | `2` | Magnet height in mm (a positive number). |
 | `--center` | no | used if you pass neither flag | Carve a hole in the center of each model. |
 | `--corners` | no | | Carve a hole in each corner of each rectangular model. Pass both flags for 5 holes. |
-| `--solver` | no | `EXACT` in the script | `EXACT` or `FAST`, passed to the script (see above). When you pass it, the output goes to a `<SOLVER>-solver` subdirectory. |
+| `--solver` | no | `EXACT` in the script | `EXACT` or `FAST`, passed to the script (see above). |
 | `--no-fallback` | no | | Passed to the script: with `--solver FAST`, do not fall back to `EXACT` when the result looks broken. |
 | `-h`, `--help` | no | | Show the help and exit. |
 
 How it works:
 
 - Output goes to the same path with the `input` component replaced by `output`, for example `assets/input/wood-elf-bases/25x25` becomes `assets/output/wood-elf-bases/25x25`. The directory is created if it does not exist.
-- With `--solver`, the output goes to a subdirectory named after the solver, so you can compare the two: `--solver FAST` writes to `assets/output/wood-elf-bases/25x25/FAST-solver` and `--solver EXACT` to `assets/output/wood-elf-bases/25x25/EXACT-solver`. Without `--solver` there is no such subdirectory.
-- Each output file keeps the name of the input file, with a `_with_<diameter>x<height>_magnet` suffix: `base 1.stl` becomes `base 1_with_5x2_magnet.stl`. Numbers are written without trailing zeros (`--diameter 6.0` gives `6`). The suffix does not say which holes were carved, so running `carve` again with different flags overwrites the previous files.
+- Each output file keeps the name of the input file, with a `_with_<diameter>x<height>_magnet` suffix: `base 1.stl` becomes `base 1_with_5x2_magnet.stl`. Numbers are written without trailing zeros (`--diameter 6.0` gives `6`). The suffix does not say which holes were carved or which solver was used (the log file does), so running `carve` again with different flags or with the other solver overwrites the previous files.
 - Files where no hole could be carved (for example `--corners` alone on a model that is not rectangular) are skipped. They are listed at the end and `carve` exits with `1`. It also exits with `1` when the directory does not exist or has no STL files, and with `2` when the arguments are invalid.
 - Each file is processed by its own Blender process, so each one gets its own [log file](#logging).
 
@@ -152,13 +151,10 @@ carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2 --center --corners
 # -> assets/output/wood-elf-bases/25x25/base 1_with_5x2_magnet.stl, ...
 ```
 
-Compare the two solvers on the same models:
+Carve faster with the `FAST` solver:
 
 ```sh
-carve -i assets/input/wood-elf-bases/25x25 --center --corners --solver EXACT
 carve -i assets/input/wood-elf-bases/25x25 --center --corners --solver FAST
-# -> assets/output/wood-elf-bases/25x25/EXACT-solver/base 1_with_5x2_magnet.stl, ...
-# -> assets/output/wood-elf-bases/25x25/FAST-solver/base 1_with_5x2_magnet.stl, ...
 ```
 
 ### Logging
@@ -173,7 +169,7 @@ CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corn
 
 What is logged:
 
-- `INFO`: the log file path, the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
+- `INFO`: the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
 - `DEBUG`: also the bounding box of the model, the detected height axis, the position of each hole and the number of self-intersecting triangle pairs of the input mesh.
 - `WARNING`: for example when `--corners` is ignored because the model is not rectangular, when a [result check](#result-checks) fails, or when the script falls back to the `EXACT` solver.
 - `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).

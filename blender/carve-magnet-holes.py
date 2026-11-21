@@ -91,7 +91,6 @@ def setup_logging():
     logger.addHandler(stdout_handler)
     logger.addHandler(file_handler)
 
-    logger.info("Logging to %s", log_path)
     if invalid_level:
         logger.warning(
             "Invalid %s=%r (expected one of %s): using %s",

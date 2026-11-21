@@ -18,8 +18,7 @@ Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM] [--center] [--cor
   --center             Carve a hole in the center of each model (default if no hole flag is given)
   --corners            Carve a hole in each corner of rectangular models
   --solver SOLVER      Boolean solver, EXACT (default) or FAST (much quicker, but it does not handle
-                       meshes that are not clean). When given, the output goes to a <SOLVER>-solver
-                       subdirectory, e.g. .../25x25/FAST-solver, so you can compare the two solvers
+                       meshes that are not clean)
   --no-fallback        With --solver FAST, do not fall back to EXACT when the result looks broken
   -h, --help           Show this help
 EOF
@@ -90,11 +89,6 @@ case "/$in_dir/" in
     */input/*) out_dir="$(sed 's#\(^\|/\)input\(/\|$\)#\1output\2#' <<<"$in_dir")" ;;
     *) echo "Input directory must contain an 'input' path component: $in_dir" >&2; exit 2 ;;
 esac
-
-# Keep the results of the two solvers apart, so they are easy to compare
-if [[ -n "$solver" ]]; then
-    out_dir="$out_dir/${solver}-solver"
-fi
 
 suffix="_with_$(fmt "$diameter")x$(fmt "$height")_magnet"
 files=("$in_dir"/*.stl)
