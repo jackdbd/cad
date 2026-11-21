@@ -9,6 +9,8 @@ Some Blender and OpenSCAD scripts.
 - [Blender scripts](#blender-scripts)
   - [carve-magnet-holes.py](#carve-magnet-holespy)
   - [carve](#carve)
+  - [merge-on-edge.py](#merge-on-edgepy)
+  - [preview-pairs.py](#preview-pairspy)
   - [Logging](#logging)
 - [OpenSCAD scripts](#openscad-scripts)
 
@@ -46,7 +48,9 @@ The devenv shell also provides these scripts:
 | Variable | Default | Defined in | Used by | Description |
 | --- | --- | --- | --- | --- |
 | `CARVE_LOG_LEVEL` | `INFO` (when unset) | you | `carve-magnet-holes.py`, `carve` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (case-insensitive). An invalid value logs a warning and falls back to `INFO`. See [Logging](#logging). |
-| `NO_COLOR` | unset | you | `carve-magnet-holes.py` | When set (to any value), log output on stdout is never colored. Colors are only used when stdout is a terminal. |
+| `MERGE_LOG_LEVEL` | `INFO` (when unset) | you | `merge-on-edge.py` | Log level of `merge-on-edge.py`, with the same values as `CARVE_LOG_LEVEL`. |
+| `PREVIEW_LOG_LEVEL` | `INFO` (when unset) | you | `preview-pairs.py` | Log level of `preview-pairs.py`, with the same values as `CARVE_LOG_LEVEL`. |
+| `NO_COLOR` | unset | you | `carve-magnet-holes.py`, `merge-on-edge.py`, `preview-pairs.py` | When set (to any value), log output on stdout is never colored. Colors are only used when stdout is a terminal. |
 | `MAGNET_DIAMETER` | `5.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet diameter in mm, passed to the script as `--diameter`. |
 | `MAGNET_HEIGHT` | `2.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet height in mm, passed to the script as `--height`. |
 | `CLAUDE_CONFIG_DIR` | `/home/jack/.claude-zartis/` | `devenv.nix` | Claude Code | Directory where Claude Code keeps its configuration. |
@@ -54,6 +58,8 @@ The devenv shell also provides these scripts:
 ## Blender scripts
 
 These scripts need [Blender](https://www.blender.org/) (tested with 5.2.2) and the `blender` command on your `PATH`. The devenv shell does not provide it.
+
+The scripts share their common code (logging, timers, STL import and export, mesh analysis) in `blender/cad_common.py`, and the detection and matching of the straight edges of the bottom of a base in `blender/base_geometry.py`. Blender does not add the directory of a script to the import path, so each script starts by adding it (`sys.path.insert(0, str(Path(__file__).resolve().parent))`) and then imports the module. A new script in `blender/` can do the same.
 
 ### carve-magnet-holes.py
 
@@ -157,22 +163,97 @@ Carve faster with the `FAST` solver:
 carve -i assets/input/wood-elf-bases/25x25 --center --corners --solver FAST
 ```
 
+### merge-on-edge.py
+
+Merges two models of miniature bases into one, on the edge where they touch. The first model (A) stays where it is, and the second one (B) is moved onto it.
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `-a`, `--in-a` | yes | Path to the first STL file. |
+| `-b`, `--in-b` | yes | Path to the second STL file. |
+| `-o`, `--out` | yes | Path to the merged STL file. Missing parent directories are created. |
+| `--hole-tolerant` | no | Use the hole tolerant option of the `EXACT` solver for the union: it leaves far fewer non-manifold edges at the seam of models that are not clean, but takes 5 to 10 times longer. |
+| `-h`, `--help` | no | Show the help and exit. |
+
+How it works:
+
+1. **Same bottom plane.** The thinnest dimension of a model is its height. B is moved along it until the bottoms of the two models are on the same plane, so their edges are not tilted. If the thinnest dimension is not the same axis in the two models, the script logs an error and exits.
+2. **Straight edges.** On each model, the candidate edges are the straight edges of the outline of the flat bottom (the edges where the faces on the bottom plane meet other faces). The outline of a real model is made of many tiny edges and is not exactly straight, so it is split into runs that stay within 0.1 mm of a straight line. Edges shorter than 20% of the longest dimension of the model are ignored, so a round or oval model, whose outline is made of many short edges, has no candidate: the script logs an error and exits. Straight edges on the same line are joined, even with a gap between them (a notch in the outline), if the gap is at most 10% of the length of the joined edge.
+3. **Matching.** The models can be anywhere in the files. The script takes the pairs of an edge of A and an edge of B, the closest pair first (the one that asks for the smallest move of B), and stops at the first pair where the two edges have about the same length (within 2 mm), are about parallel (within 5°), and have the models on opposite sides (they touch instead of overlapping, and B only needs a small rotation). If no pair matches, the script logs an error with the number of pairs rejected for each reason, and exits.
+4. **Alignment.** If the lengths of the two edges differ by less than 0.01 mm and the rotation is below 0.1°, the script logs that the edges match perfectly (`INFO`). If not, it logs a warning with the length difference and the rotation, and goes on. B is rotated around the height axis and moved, without deforming it, so that its edge lies on the edge of A. It is then pushed 0.01 mm into A, because walls that are coplanar only up to rounding errors make the union produce slivers, and the overlap also connects models that touch along an edge only.
+5. **Union.** The two models are merged with a Boolean union (`EXACT` solver), which removes the walls that were back to back, and the vertices closer than 0.001 mm are welded. With `--hole-tolerant`, the union uses the hole tolerant option of the solver, which copes better with models that are not clean. On two pairs of scenic bases of about 2 million triangles, it took 5.5 and 6.5 minutes instead of about 45 seconds, and the non-manifold edges of the result went from 6,982 to 234 and from 3,476 to 387. The volume of one result was 0.27% below the sum of the two models, which the result check allows (2%).
+6. **Result check.** A Boolean solver can fail without any error: for example, Blender's `MANIFOLD` solver returns only one of the two models when they are not clean enough. So the script checks that the merged model has the bounding box of the two models (within 0.1 mm) and the sum of their volumes (within 2%). If not, it logs an error for each problem and exits with `1`: **no file is written**. If the merged model has more non-manifold edges than the two models together, it logs a warning.
+
+The thresholds above are constants at the top of the script (`OVERLAP`, `WELD_DISTANCE`, `BOUNDING_BOX_TOLERANCE`, `VOLUME_TOLERANCE`) and at the top of `blender/base_geometry.py` (`STRAIGHT_TOLERANCE`, `STRAIGHT_ANGLE`, `JOIN_TOLERANCE`, `MAX_GAP_RATIO`, `MIN_EDGE_RATIO`, `PERFECT_TOLERANCE`, `PERFECT_ANGLE`, `COARSE_TOLERANCE`, `MAX_ROTATION`).
+
+Exit codes: `0` when the merged file was written (with or without warnings), `1` when the script logged an error (nothing is written in that case), and `2` when the arguments are invalid. As with `carve-magnet-holes.py`, pass `--python-exit-code 1` to Blender if you check the exit code, otherwise an unexpected error exits with `0`.
+
+```sh
+blender -b --python-exit-code 1 -P blender/merge-on-edge.py -- \
+    --in-a assets/input/base-a.stl \
+    --in-b assets/input/base-b.stl \
+    --out assets/output/base-a-and-b.stl
+```
+
+Notes:
+
+- The script assumes that the bottoms of the models are flat and that the models lie flat with the same axis as height.
+- The merged model can have tiny non-manifold edges along the seam. Two real 25 mm bases ended up with 3 of them (0.1 to 0.4 mm long). Two scenic bases about 30 mm thick (50x100 and 100x100, with sculpted walls) ended up with thousands, because the union of two rough walls creates many tiny slivers: the script warns about them, so check the result in a slicer. `--hole-tolerant` leaves far fewer of them.
+- Like `carve-magnet-holes.py`, the script writes a [log file](#logging).
+
+### preview-pairs.py
+
+Renders a picture of each pair of bases that can be merged on an edge, to see how the two bases go together before you merge them. Nothing is merged: each picture shows the two models next to each other, seen from above, on the edge that `merge-on-edge.py` would use.
+
+Whether two bases belong together (the path, the river or the ground continues across the seam) cannot be told from the geometry: almost any two rectangular bases can be joined on an edge. The pictures are there for you to judge.
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `-a`, `--dir-a` | yes | | Directory with the first STL files (they do not move). |
+| `-b`, `--dir-b` | no | the same as `--dir-a` | Directory with the second STL files. If it is the same directory, the script looks for pairs inside it, each pair once. |
+| `-o`, `--out` | no | `assets/output/previews` | Directory for the pictures and for the `index.html` page. |
+| `-h`, `--help` | no | | Show the help and exit. |
+
+How it works:
+
+1. Each model is loaded once, to find the axis of its height and the straight edges of its bottom outline.
+2. Every pair of a model of `--dir-a` and a model of `--dir-b` is matched like `merge-on-edge.py` does (same bottom plane, then the first pair of edges that match).
+3. For each pair that matches, the script places the second model next to the first one on those edges, without merging them, and renders them from above (Blender's Workbench engine) into `<directory>-<model>__<directory>-<model>.png`.
+4. `index.html` shows the pictures one after the other, with the quality of the match (`perfect` or `approximate`), the thickness of the two models (the step they would have at the seam), and the pairs that cannot be merged, with the reason. Open it in a browser.
+
+On the 7 bases of `50x100` and `100x100`, loading took about 25 seconds and each picture about 3 seconds.
+
+```sh
+blender -b --python-exit-code 1 -P blender/preview-pairs.py -- \
+    --dir-a assets/input/wood-elf-bases/50x100 \
+    --dir-b assets/input/wood-elf-bases/100x100 \
+    --out assets/output/previews/50x100-with-100x100
+```
+
+Notes:
+
+- A picture shows the arrangement `merge-on-edge.py` would choose, the one on the closest matching edges. Two portrait bases of the same size could also be joined along their other sides: those arrangements are not shown.
+- Exit codes: `0` when the pictures are written, `1` when a directory does not exist or has no STL files, and `2` when the arguments are invalid.
+- Like the other scripts, it writes a [log file](#logging).
+
 ### Logging
 
-`carve-magnet-holes.py` logs to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in the `logs/` directory of the repo, named like `carve-magnet-holes_2026-11-21_23-58-59.log` (UTC timestamp of the start of the run). Log files are gitignored. Each run writes its own file, and timestamps inside the log are in UTC too. Runs that only print the help or fail on invalid arguments do not create a log file.
+`carve-magnet-holes.py`, `merge-on-edge.py` and `preview-pairs.py` log to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in the `logs/` directory of the repo, named like `carve-magnet-holes_2026-11-21_23-58-59.log` or `merge-on-edge_2026-11-21_23-58-59.log` (the script name and the UTC timestamp of the start of the run). Log files are gitignored. Each run writes its own file, and timestamps inside the log are in UTC too. Runs that only print the help or fail on invalid arguments do not create a log file.
 
-Set the level with the `CARVE_LOG_LEVEL` environment variable (`DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`):
+Set the level with the `CARVE_LOG_LEVEL` environment variable (`MERGE_LOG_LEVEL` for `merge-on-edge.py`, `PREVIEW_LOG_LEVEL` for `preview-pairs.py`): `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`:
 
 ```sh
 CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corners
 ```
 
-What is logged:
+What `carve-magnet-holes.py` logs:
 
 - `INFO`: the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
 - `DEBUG`: also the bounding box of the model, the detected height axis, the position of each hole and the number of self-intersecting triangle pairs of the input mesh.
 - `WARNING`: for example when `--corners` is ignored because the model is not rectangular, when a [result check](#result-checks) fails, or when the script falls back to the `EXACT` solver.
 - `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).
+
+`merge-on-edge.py` logs the command line arguments and the input and output filenames at `INFO`, then each step: the move to the same bottom plane, the number of straight edges of each model, the pair of edges it merges on (`INFO` for a perfect match, `WARNING` with the details otherwise), the welded vertices, the result check, and how long import, merge, the check and export took. Errors (no straight edge, no matching edge, models oriented differently, a failed result check) and the warning about non-manifold edges are logged as described above.
 
 Messages printed by Blender itself (for example `Removed N degenerate triangles during import`) only go to stdout, not to the log file.
 
