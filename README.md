@@ -42,10 +42,18 @@ Show the help for the `cad:subtract-magnet-hole` task:
 devenv tasks run cad:subtract-magnet-hole:help
 ```
 
-Run the `subtract-magnet-hole.py` script to carve a magnet socket into an STL file:
+Run the `subtract-magnet-hole.py` script to carve magnet sockets into an STL file. At least one of `--center` and `--corners` is required, otherwise the script prints its help and exits:
+
+- `--center` carves a hole in the center of the model.
+- `--corners` carves a hole in each of the 4 corners, with each hole centered one magnet diameter from the edges (`CORNER_EDGE_DISTANCE_FACTOR` in the script). It only applies to rectangular models: on any other shape it prints a warning and is ignored.
+- Pass both to carve 5 holes.
 
 ```sh
-blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/base.stl --out assets/output/base_with_hole.stl --diameter 5.0 --height 2.0
+blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/base.stl --out assets/output/base_with_holes.stl --diameter 5.0 --height 2.0 --center --corners
+```
+
+```sh
+blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/wood-elf-bases/50x75/base.stl --out assets/output/base_with_holes.stl --diameter 5.0 --height 2.0 --center --corners
 ```
 
 Run the `cad:subtract-magnet-hole` task to carve a magnet socket into an STL file:
@@ -54,13 +62,13 @@ Run the `cad:subtract-magnet-hole` task to carve a magnet socket into an STL fil
 devenv tasks run cad:subtract-magnet-hole:run
 ```
 
-Carve a magnet socket into every STL file found in a directory. Output goes to the matching `assets/output/...` directory, with a `_with_<diameter>x<height>_magnet` suffix on each filename.
+Carve magnet sockets into every STL file found in a directory. Output goes to the matching `assets/output/...` directory, with a `_with_<diameter>x<height>_magnet` suffix on each filename. `carve` accepts `--center` (the default if no flag is given) and `--corners`. Files where no hole could be carved are skipped and listed at the end.
 
 ```sh
-carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2
+carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2 --center --corners
 # -> assets/output/wood-elf-bases/25x25/base 1_with_5x2_magnet.stl, ...
 
-./carve -i assets/input/wood-elf-bases/50x75 -d 5 -H 2
+./carve.sh -i assets/input/wood-elf-bases/50x75 -d 5 -H 2 --center --corners
 ```
 
 ## OpenSCAD scripts

@@ -58,7 +58,8 @@
         --in assets/input/high-elf-bases/20x20/base-2.stl \
         --out assets/output/high-elf-bases/20x20-with-holes/base-2_with_5x2_magnet.stl \
         --diameter $MAGNET_DIAMETER \
-        --height $MAGNET_HEIGHT
+        --height $MAGNET_HEIGHT \
+        --center
       '';
     };
   };

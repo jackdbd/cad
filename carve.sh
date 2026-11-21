@@ -10,11 +10,13 @@ SCRIPT="$(dirname "${BASH_SOURCE[0]}")/blender/subtract-magnet-hole.py"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM]
+Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM] [--center] [--corners]
 
   -i, --in DIR         Directory of input STL files (must contain an 'input' path component)
   -d, --diameter MM    Magnet diameter in mm (default: 5)
   -H, --height MM      Magnet height in mm (default: 2)
+  --center             Carve a hole in the center of each model (default if no hole flag is given)
+  --corners            Carve a hole in each corner of rectangular models
   -h, --help           Show this help
 EOF
 }
@@ -34,16 +36,22 @@ shopt -s extglob nullglob nocaseglob
 in_dir=""
 diameter="5"
 height="2"
+hole_flags=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i | --in) in_dir="${2:?--in needs a value}"; shift 2 ;;
         -d | --diameter) diameter="${2:?--diameter needs a value}"; shift 2 ;;
         -H | --height) height="${2:?--height needs a value}"; shift 2 ;;
+        --center | --corners) hole_flags+=("$1"); shift ;;
         -h | --help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [[ ${#hole_flags[@]} -eq 0 ]]; then
+    hole_flags=(--center)
+fi
 
 if [[ -z "$in_dir" ]]; then
     echo "Missing --in DIR" >&2
@@ -80,11 +88,21 @@ fi
 
 mkdir -p "$out_dir"
 
+failed=()
+
 for f in "${files[@]}"; do
     filename="$(basename "$f")"
     out="$out_dir/${filename%.*}${suffix}.${filename##*.}"
-    blender -b --python-exit-code 1 -P "$SCRIPT" -- \
-        --in "$f" --out "$out" --diameter "$diameter" --height "$height"
+    if ! blender -b --python-exit-code 1 -P "$SCRIPT" -- \
+        --in "$f" --out "$out" --diameter "$diameter" --height "$height" "${hole_flags[@]}"; then
+        failed+=("$filename")
+    fi
 done
 
-echo "Processed ${#files[@]} file(s) into $out_dir"
+echo "Processed $((${#files[@]} - ${#failed[@]})) of ${#files[@]} file(s) into $out_dir"
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "Skipped ${#failed[@]} file(s) with no hole carved:" >&2
+    printf '  %s\n' "${failed[@]}" >&2
+    exit 1
+fi
