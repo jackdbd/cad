@@ -47,6 +47,11 @@ MAX_ROTATION = math.radians(5)
 OVERLAP = 0.01  # mm
 # Vertices closer than this are welded in the merged model
 WELD_DISTANCE = 0.001  # mm
+# The bounding box of the merged model can differ this much from the one of the two models
+BOUNDING_BOX_TOLERANCE = 0.1  # mm
+# The volume of the merged model can differ this much from the sum of the volumes of the
+# two models, as a fraction of that sum
+VOLUME_TOLERANCE = 0.02
 
 LOG_LEVEL_ENV_VAR = "MERGE_LOG_LEVEL"
 
@@ -359,6 +364,38 @@ def merge_models(obj_a, obj_b):
     return welded
 
 
+def check_result(obj, expected_min, expected_max, expected_volume):
+    """Look for signs of a broken merge in obj.
+
+    A Boolean solver can fail without any error, for example by returning only one of
+    the two models. A union does not change where the two models are, nor their total
+    volume (except for the small overlap): the merged model must have the bounding box of
+    the two models and the sum of their volumes. Return the problems found, the number of
+    non-manifold edges and the volume of the merged model.
+    """
+    coords = vertex_coordinates(obj)
+    merged_min, merged_max = coords.min(axis=0), coords.max(axis=0)
+    non_manifold, volume = common.analyze_mesh(obj.data)
+
+    problems = []
+    if (
+        np.abs(merged_min - expected_min).max() > BOUNDING_BOX_TOLERANCE
+        or np.abs(merged_max - expected_max).max() > BOUNDING_BOX_TOLERANCE
+    ):
+        problems.append(
+            "the bounding box of the merged model (%s to %s) is not the one of the two "
+            "models (%s to %s): a model may be missing"
+            % tuple(np.array2string(v, precision=1) for v in (merged_min, merged_max, expected_min, expected_max))
+        )
+    if abs(volume - expected_volume) > VOLUME_TOLERANCE * expected_volume:
+        problems.append(
+            f"the volume of the merged model is {volume:.1f} mm3, but the two models "
+            f"together have {expected_volume:.1f} mm3 (+/-{VOLUME_TOLERANCE:.0%}): "
+            "geometry may be missing"
+        )
+    return problems, non_manifold, volume
+
+
 def process_models(input_a, input_b, output):
     common.reset_scene()
     with timed("STL import"):
@@ -447,11 +484,29 @@ def process_models(input_a, input_b, output):
     obj_b.data.transform(transform)
 
     # Step 5: merge the two models
-    non_manifold_before = common.analyze_mesh(obj_a.data)[0] + common.analyze_mesh(obj_b.data)[0]
+    before = [common.analyze_mesh(obj.data) for obj in (obj_a, obj_b)]
+    non_manifold_before = sum(non_manifold for non_manifold, _ in before)
+    volume_before = sum(volume for _, volume in before)
+    coords = np.vstack([vertex_coordinates(obj_a), vertex_coordinates(obj_b)])
+    expected_min, expected_max = coords.min(axis=0), coords.max(axis=0)
     with timed("Merge"):
         welded = merge_models(obj_a, obj_b)
     logger.info("%d vertex(es) welded after the union", welded)
-    non_manifold_after = common.analyze_mesh(obj_a.data)[0]
+
+    with timed("Result check"):
+        problems, non_manifold_after, volume = check_result(
+            obj_a, expected_min, expected_max, volume_before
+        )
+    for problem in problems:
+        logger.error("Result check failed: %s", problem)
+    if problems:
+        fail("The merged model looks broken: it is not exported")
+    logger.info(
+        "Result check passed: the bounding box covers both models and the volume is "
+        "%.1f mm3 (the two models have %.1f mm3)",
+        volume,
+        volume_before,
+    )
     if non_manifold_after > non_manifold_before:
         logger.warning(
             "The merged model has %d more non-manifold edge(s) than the two models "
