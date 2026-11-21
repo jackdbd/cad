@@ -1,20 +1,20 @@
 import argparse
-import copy
 import logging
 import math
-import os
 import shlex
 import sys
-import time
 from collections import namedtuple
-from contextlib import contextmanager
-from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 import bmesh
 import bpy
 import mathutils
 import numpy as np
+
+# Blender does not add the directory of a script to the import path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cad_common as common  # noqa: E402
 
 # The outline of the bottom stays within this distance of a straight edge. The outline of
 # a real model is made of many tiny edges, and not exactly straight.
@@ -49,86 +49,12 @@ OVERLAP = 0.01  # mm
 WELD_DISTANCE = 0.001  # mm
 
 LOG_LEVEL_ENV_VAR = "MERGE_LOG_LEVEL"
-LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-DEFAULT_LOG_LEVEL = "INFO"
-LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
-LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 logger = logging.getLogger(Path(__file__).stem)
+timed = partial(common.timed, logger)
 
 # A straight edge of a model, from p0 to p1
 Edge = namedtuple("Edge", ["p0", "p1"])
-
-
-class ColorFormatter(logging.Formatter):
-    """Formatter that colors the level name with ANSI escape codes."""
-
-    RESET = "\033[0m"
-    COLORS = {
-        logging.DEBUG: "\033[36m",
-        logging.INFO: "\033[32m",
-        logging.WARNING: "\033[33m",
-        logging.ERROR: "\033[31m",
-        logging.CRITICAL: "\033[1;31m",
-    }
-
-    def format(self, record):
-        # Format a copy: the file handler shares the record and must stay uncolored
-        record = copy.copy(record)
-        color = self.COLORS.get(record.levelno, "")
-        record.levelname = f"{color}{record.levelname:<8}{self.RESET}"
-        return super().format(record)
-
-
-def setup_logging():
-    """Log to stdout (colored on a terminal) and to a timestamped file in LOGS_DIR."""
-    requested = os.environ.get(LOG_LEVEL_ENV_VAR, DEFAULT_LOG_LEVEL).strip().upper()
-    invalid_level = requested not in LOG_LEVELS
-    level = getattr(logging, DEFAULT_LOG_LEVEL if invalid_level else requested)
-
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = LOGS_DIR / f"{Path(__file__).stem}_{timestamp}.log"
-
-    plain_format = "%(asctime)s %(levelname)-8s %(message)s"
-    file_formatter = logging.Formatter(plain_format, LOG_DATE_FORMAT)
-    stdout_formatter = file_formatter
-    if sys.stdout.isatty() and "NO_COLOR" not in os.environ:
-        stdout_formatter = ColorFormatter(
-            "%(asctime)s %(levelname)s %(message)s", LOG_DATE_FORMAT
-        )
-    # Timestamps in UTC, like the log filename
-    file_formatter.converter = stdout_formatter.converter = time.gmtime
-
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setFormatter(stdout_formatter)
-    # Append, so two runs starting within the same second never overwrite each other
-    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    file_handler.setFormatter(file_formatter)
-
-    logger.setLevel(level)
-    logger.propagate = False
-    logger.addHandler(stdout_handler)
-    logger.addHandler(file_handler)
-
-    if invalid_level:
-        logger.warning(
-            "Invalid %s=%r (expected one of %s): using %s",
-            LOG_LEVEL_ENV_VAR,
-            requested,
-            ", ".join(LOG_LEVELS),
-            DEFAULT_LOG_LEVEL,
-        )
-
-
-@contextmanager
-def timed(label, level=logging.INFO):
-    """Log how long the wrapped block took, even if it raises."""
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        logger.log(level, "%s took %.2f ms", label, (time.perf_counter() - start) * 1000)
 
 
 def fail(message, *args):
@@ -137,32 +63,13 @@ def fail(message, *args):
     sys.exit(1)
 
 
-def reset_scene():
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-
-
-def import_stl(filepath):
+def import_model(filepath):
     """Import an STL file and return its object, with its transform baked into the mesh."""
-    before = set(bpy.data.objects)
-    # Import the STL file (compatible with Blender 4+ and earlier versions)
-    try:
-        bpy.ops.wm.stl_import(filepath=filepath)
-    except AttributeError:
-        bpy.ops.import_mesh.stl(filepath=filepath)
-    (obj,) = set(bpy.data.objects) - before
-
+    obj = common.import_stl(filepath)
     # From now on the local coordinates of the mesh are its world coordinates
     obj.data.transform(obj.matrix_world)
     obj.matrix_world = mathutils.Matrix.Identity(4)
     return obj
-
-
-def export_stl(filepath):
-    os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-    try:
-        bpy.ops.wm.stl_export(filepath=filepath)
-    except AttributeError:
-        bpy.ops.export_mesh.stl(filepath=filepath)
 
 
 def vertex_coordinates(obj):
@@ -179,14 +86,6 @@ def height_axis(obj):
 
 def bottom_height(obj, height_idx):
     return float(vertex_coordinates(obj)[:, height_idx].min())
-
-
-def count_non_manifold_edges(mesh):
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    count = sum(1 for e in bm.edges if not e.is_manifold)
-    bm.free()
-    return count
 
 
 def simplify_polyline(points, tolerance):
@@ -461,10 +360,10 @@ def merge_models(obj_a, obj_b):
 
 
 def process_models(input_a, input_b, output):
-    reset_scene()
+    common.reset_scene()
     with timed("STL import"):
-        obj_a = import_stl(input_a)
-        obj_b = import_stl(input_b)
+        obj_a = import_model(input_a)
+        obj_b = import_model(input_b)
 
     # Step 1: put the bottoms of the two models on the same plane
     height_idx = height_axis(obj_a)
@@ -548,11 +447,11 @@ def process_models(input_a, input_b, output):
     obj_b.data.transform(transform)
 
     # Step 5: merge the two models
-    non_manifold_before = count_non_manifold_edges(obj_a.data) + count_non_manifold_edges(obj_b.data)
+    non_manifold_before = common.analyze_mesh(obj_a.data)[0] + common.analyze_mesh(obj_b.data)[0]
     with timed("Merge"):
         welded = merge_models(obj_a, obj_b)
     logger.info("%d vertex(es) welded after the union", welded)
-    non_manifold_after = count_non_manifold_edges(obj_a.data)
+    non_manifold_after = common.analyze_mesh(obj_a.data)[0]
     if non_manifold_after > non_manifold_before:
         logger.warning(
             "The merged model has %d more non-manifold edge(s) than the two models "
@@ -564,13 +463,13 @@ def process_models(input_a, input_b, output):
         )
 
     with timed("STL export"):
-        export_stl(output)
+        common.export_stl(output)
     logger.info("Exported %s", output)
 
 
 if __name__ == "__main__":
     # Get parameters passed after Blender's '--' separator
-    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+    argv = common.script_arguments()
 
     parser = argparse.ArgumentParser(
         description="Merge two models of miniature bases on the edge that matches. "
@@ -591,7 +490,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args(argv)
 
-    setup_logging()
+    common.setup_logging(logger, LOG_LEVEL_ENV_VAR)
     logger.info("Command line arguments: %s", shlex.join(argv))
     logger.info("Input file A: %s", args.in_a)
     logger.info("Input file B: %s", args.in_b)

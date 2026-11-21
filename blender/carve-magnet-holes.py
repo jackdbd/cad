@@ -1,19 +1,19 @@
 import argparse
-import copy
 import logging
 import math
-import os
 import shlex
 import sys
-import time
-from contextlib import contextmanager
-from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 import bmesh
 import bpy
 import mathutils
 from mathutils.bvhtree import BVHTree
+
+# Blender does not add the directory of a script to the import path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cad_common as common  # noqa: E402
 
 TOLERANCE = 0.2  # Clearance tolerance applied to both diameter and depth (in mm)
 EXTRA_CUT = 0.5  # Overcut offset to cleanly puncture the outer bottom face
@@ -34,101 +34,9 @@ CUTTER_VERTICES = 64  # Vertices of each cylinder subtracted from the base
 VOLUME_TOLERANCE = 0.02
 
 LOG_LEVEL_ENV_VAR = "CARVE_LOG_LEVEL"
-LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-DEFAULT_LOG_LEVEL = "INFO"
-LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
-LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 logger = logging.getLogger(Path(__file__).stem)
-
-
-class ColorFormatter(logging.Formatter):
-    """Formatter that colors the level name with ANSI escape codes."""
-
-    RESET = "\033[0m"
-    COLORS = {
-        logging.DEBUG: "\033[36m",
-        logging.INFO: "\033[32m",
-        logging.WARNING: "\033[33m",
-        logging.ERROR: "\033[31m",
-        logging.CRITICAL: "\033[1;31m",
-    }
-
-    def format(self, record):
-        # Format a copy: the file handler shares the record and must stay uncolored
-        record = copy.copy(record)
-        color = self.COLORS.get(record.levelno, "")
-        record.levelname = f"{color}{record.levelname:<8}{self.RESET}"
-        return super().format(record)
-
-
-def setup_logging():
-    """Log to stdout (colored on a terminal) and to a timestamped file in LOGS_DIR."""
-    requested = os.environ.get(LOG_LEVEL_ENV_VAR, DEFAULT_LOG_LEVEL).strip().upper()
-    invalid_level = requested not in LOG_LEVELS
-    level = getattr(logging, DEFAULT_LOG_LEVEL if invalid_level else requested)
-
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = LOGS_DIR / f"{Path(__file__).stem}_{timestamp}.log"
-
-    plain_format = "%(asctime)s %(levelname)-8s %(message)s"
-    file_formatter = logging.Formatter(plain_format, LOG_DATE_FORMAT)
-    stdout_formatter = file_formatter
-    if sys.stdout.isatty() and "NO_COLOR" not in os.environ:
-        stdout_formatter = ColorFormatter("%(asctime)s %(levelname)s %(message)s", LOG_DATE_FORMAT)
-    # Timestamps in UTC, like the log filename
-    file_formatter.converter = stdout_formatter.converter = time.gmtime
-
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setFormatter(stdout_formatter)
-    # Append, so two runs starting within the same second never overwrite each other
-    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    file_handler.setFormatter(file_formatter)
-
-    logger.setLevel(level)
-    logger.propagate = False
-    logger.addHandler(stdout_handler)
-    logger.addHandler(file_handler)
-
-    if invalid_level:
-        logger.warning(
-            "Invalid %s=%r (expected one of %s): using %s",
-            LOG_LEVEL_ENV_VAR,
-            requested,
-            ", ".join(LOG_LEVELS),
-            DEFAULT_LOG_LEVEL,
-        )
-
-
-@contextmanager
-def timed(label, level=logging.INFO):
-    """Log how long the wrapped block took, even if it raises."""
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        logger.log(level, "%s took %.2f ms", label, (time.perf_counter() - start) * 1000)
-
-
-def reset_scene():
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-
-
-def import_stl(filepath):
-    # Import the STL file (compatible with Blender 4+ and earlier versions)
-    try:
-        bpy.ops.wm.stl_import(filepath=filepath)
-    except AttributeError:
-        bpy.ops.import_mesh.stl(filepath=filepath)
-
-
-def export_stl(filepath):
-    os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-    try:
-        bpy.ops.wm.stl_export(filepath=filepath)
-    except AttributeError:
-        bpy.ops.export_mesh.stl(filepath=filepath)
+timed = partial(common.timed, logger)
 
 
 def is_rectangular(base, height_idx, mins, maxs):
@@ -153,16 +61,6 @@ def is_rectangular(base, height_idx, mins, maxs):
             if not hit:
                 return False
     return True
-
-
-def analyze_mesh(mesh):
-    """Return the number of non-manifold edges and the volume of a mesh."""
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    non_manifold_edges = sum(1 for e in bm.edges if not e.is_manifold)
-    volume = bm.calc_volume()
-    bm.free()
-    return non_manifold_edges, volume
 
 
 def count_self_intersections(mesh):
@@ -194,7 +92,7 @@ def check_result(
     silently produce broken or missing geometry. Log a warning for each sign found and
     return them, so the caller can decide what to do.
     """
-    non_manifold, volume = analyze_mesh(base.data)
+    non_manifold, volume = common.analyze_mesh(base.data)
     removed = volume_before - volume
     cutter_area = (
         0.5 * CUTTER_VERTICES * radius**2 * math.sin(2 * math.pi / CUTTER_VERTICES)
@@ -281,15 +179,15 @@ def process_base(
     solver=DEFAULT_SOLVER,
     fallback=True,
 ):
-    reset_scene()
+    common.reset_scene()
     with timed("STL import"):
-        import_stl(input_stl)
+        common.import_stl(input_stl)
 
     base = bpy.context.selected_objects[0]
     bpy.context.view_layer.objects.active = base
 
     with timed("Input mesh analysis"):
-        non_manifold_before, volume_before = analyze_mesh(base.data)
+        non_manifold_before, volume_before = common.analyze_mesh(base.data)
     logger.info(
         "Input mesh: %d triangle(s), %d non-manifold edge(s)",
         len(base.data.polygons),
@@ -386,7 +284,7 @@ def process_base(
             )
 
     with timed("STL export"):
-        export_stl(output_stl)
+        common.export_stl(output_stl)
 
     logger.info(
         "Exported %s (%d hole(s): D=%.2fmm, H=%.2fmm, %s solver)",
@@ -400,7 +298,7 @@ def process_base(
 
 if __name__ == "__main__":
     # Get parameters passed after Blender's '--' separator
-    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+    argv = common.script_arguments()
 
     parser = argparse.ArgumentParser(
         description="Add cylindrical magnet sockets to miniature bases."
@@ -459,7 +357,7 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(2)
 
-    setup_logging()
+    common.setup_logging(logger, LOG_LEVEL_ENV_VAR)
     logger.info("Command line arguments: %s", shlex.join(argv))
     logger.info("Input file: %s", args.input)
     logger.info("Output file: %s", args.output)

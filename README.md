@@ -57,6 +57,8 @@ The devenv shell also provides these scripts:
 
 These scripts need [Blender](https://www.blender.org/) (tested with 5.2.2) and the `blender` command on your `PATH`. The devenv shell does not provide it.
 
+The scripts share their common code (logging, timers, STL import and export, mesh analysis) in `blender/cad_common.py`. Blender does not add the directory of a script to the import path, so each script starts by adding it (`sys.path.insert(0, str(Path(__file__).resolve().parent))`) and then imports the module. A new script in `blender/` can do the same.
+
 ### carve-magnet-holes.py
 
 Carves cylindrical magnet sockets into an STL file. Run it with Blender in background mode: everything after the `--` is passed to the script.
