@@ -145,15 +145,30 @@ def is_rectangular(base, height_idx, mins, maxs):
     return True
 
 
-def cut_hole(base, location, rotation, radius, depth):
-    bpy.ops.mesh.primitive_cylinder_add(
-        radius=radius,
-        depth=depth,
-        vertices=64,
-        location=location,
-        rotation=rotation,
-    )
-    cutter = bpy.context.active_object
+def cut_holes(base, locations, rotation, radius, depth):
+    """Subtract one cylinder per location from base, in a single Boolean pass.
+
+    The EXACT solver re-processes the whole base mesh on every pass, so the cylinders
+    are joined into one cutter object to pay that cost once instead of once per hole.
+    """
+    cutters = []
+    for location in locations:
+        bpy.ops.mesh.primitive_cylinder_add(
+            radius=radius,
+            depth=depth,
+            vertices=64,
+            location=location,
+            rotation=rotation,
+        )
+        cutters.append(bpy.context.active_object)
+
+    if len(cutters) > 1:
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in cutters:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = cutters[0]
+        bpy.ops.object.join()
+    cutter = cutters[0]
 
     # Boolean difference
     mod_bool = base.modifiers.new(name="MagnetHole", type="BOOLEAN")
@@ -235,11 +250,10 @@ def process_base(
         logger.error("No holes to carve: nothing was exported")
         sys.exit(1)
 
+    for loc in positions:
+        logger.debug("Carving hole at %s", tuple(round(v, 3) for v in loc))
     with timed(f"Carving {len(positions)} hole(s)"):
-        for loc in positions:
-            logger.debug("Carving hole at %s", tuple(round(v, 3) for v in loc))
-            with timed("Hole", logging.DEBUG):
-                cut_hole(base, loc, rot, hole_radius, cylinder_depth)
+        cut_holes(base, positions, rot, hole_radius, cylinder_depth)
 
     with timed("STL export"):
         export_stl(output_stl)
