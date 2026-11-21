@@ -68,6 +68,7 @@ Carves cylindrical magnet sockets into an STL file. Run it with Blender in backg
 | `--center` | at least one of `--center` and `--corners` | | Carve a hole in the center of the model. |
 | `--corners` | | | Carve a hole in each of the 4 corners of a rectangular model. |
 | `--solver` | no | `EXACT` | Boolean solver: `EXACT` or `FAST` (case-insensitive). The `FAST` solver is much quicker, but it does not handle meshes that are not clean: non-manifold edges, self-intersections, coplanar faces. |
+| `--no-fallback` | no | | With `--solver FAST`, do not fall back to `EXACT` when the result looks broken (see [Result checks](#result-checks)). The warnings are still logged. |
 | `-h`, `--help` | no | | Show the help and exit. |
 
 How it works:
@@ -77,7 +78,18 @@ How it works:
 - `--center` carves a hole in the center of the model.
 - `--corners` carves a hole in each of the 4 corners, with each hole centered one magnet diameter from the two nearest edges (`CORNER_EDGE_DISTANCE_FACTOR` in the script). It only applies to rectangular models: if a corner of the bounding box is not filled by the model (a probe is cast 0.5 mm inside each corner, so slightly rounded corners are tolerated), the script prints a warning and ignores `--corners`.
 - Pass both flags to carve 5 holes. All the holes are cut in a single Boolean operation.
-- The Boolean operation uses the `EXACT` solver, which is robust but slow on detailed models. `--solver FAST` uses the faster solver instead. Blender 5 calls it `FLOAT`: the script uses whichever name your Blender has. Check the result of `FAST` before you trust it, especially on models that are not clean.
+- The Boolean operation uses the `EXACT` solver, which is robust but slow on detailed models. `--solver FAST` uses the faster solver instead. Blender 5 calls it `FLOAT`: the script uses whichever name your Blender has. Check the result of `FAST` before you trust it, especially on models that are not clean. When the result of `FAST` looks broken, the script warns and redoes the carving with `EXACT` (see [Result checks](#result-checks)).
+
+#### Result checks
+
+Boolean solvers do not report problems: on meshes that are not clean (non-manifold edges, self-intersections, coplanar faces) they can silently produce broken or missing geometry. So after carving, the script checks the result and logs a `WARNING` for each problem it finds:
+
+- **Removed volume.** The volume removed from the model must match the volume of the holes (number of holes times the area of the cylinder times the hole depth), within 2% (`VOLUME_TOLERANCE` in the script). On your real bases the difference is below 0.1 mm³ for 5 holes. A bigger difference means that a hole is missing or only partly cut, or that a hole is not fully inside the model.
+- **Non-manifold edges.** Carving must not increase the number of non-manifold edges of the model.
+
+Before carving, the script also logs the state of the input mesh at `INFO`: triangles, non-manifold edges and pairs of self-intersecting triangles. These numbers are information, not warnings: many models already have a few problems and still carve well.
+
+With `--solver FAST`, a failed check also triggers a **fallback**: the script starts again from the original mesh, carves with the `EXACT` solver and logs a warning. The log line `Exported ...` tells which solver produced the file. Pass `--no-fallback` to keep the `FAST` result anyway, for example to look at what `FAST` does wrong. The checks add about 3 seconds to each model (counting the self-intersections is most of it).
 
 Exit codes:
 
@@ -124,6 +136,7 @@ devenv tasks run cad:carve-magnet-holes:run
 | `--center` | no | used if you pass neither flag | Carve a hole in the center of each model. |
 | `--corners` | no | | Carve a hole in each corner of each rectangular model. Pass both flags for 5 holes. |
 | `--solver` | no | `EXACT` in the script | `EXACT` or `FAST`, passed to the script (see above). When you pass it, the output goes to a `<SOLVER>-solver` subdirectory. |
+| `--no-fallback` | no | | Passed to the script: with `--solver FAST`, do not fall back to `EXACT` when the result looks broken. |
 | `-h`, `--help` | no | | Show the help and exit. |
 
 How it works:
@@ -160,9 +173,9 @@ CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corn
 
 What is logged:
 
-- `INFO`: the log file path, the command line arguments, the input and output filenames, the Boolean solver, how long each phase took (`STL import`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `STL export` and `Total`), and the result.
+- `INFO`: the log file path, the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
 - `DEBUG`: also the bounding box of the model, the detected height axis and the position of each hole.
-- `WARNING`: for example when `--corners` is ignored because the model is not rectangular.
+- `WARNING`: for example when `--corners` is ignored because the model is not rectangular, when a [result check](#result-checks) fails, or when the script falls back to the `EXACT` solver.
 - `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).
 
 Messages printed by Blender itself (for example `Removed N degenerate triangles during import`) only go to stdout, not to the log file.

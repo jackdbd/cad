@@ -1,6 +1,7 @@
 import argparse
 import copy
 import logging
+import math
 import os
 import shlex
 import sys
@@ -9,8 +10,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import bmesh
 import bpy
 import mathutils
+from mathutils.bvhtree import BVHTree
 
 TOLERANCE = 0.2  # Clearance tolerance applied to both diameter and depth (in mm)
 EXTRA_CUT = 0.5  # Overcut offset to cleanly puncture the outer bottom face
@@ -25,6 +28,10 @@ CORNER_EDGE_DISTANCE_FACTOR = 1.0
 # How far inside each bounding-box corner the rectangularity probe is cast: small
 # corner rounding is tolerated, as the corner holes still fit inside it
 CORNER_PROBE_INSET = 0.5  # mm
+CUTTER_VERTICES = 64  # Vertices of each cylinder subtracted from the base
+# Allowed difference between the removed and the expected volume, as a fraction of the
+# expected one. Measured on real bases the difference is about 0.2%.
+VOLUME_TOLERANCE = 0.02
 
 LOG_LEVEL_ENV_VAR = "CARVE_LOG_LEVEL"
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -149,6 +156,78 @@ def is_rectangular(base, height_idx, mins, maxs):
     return True
 
 
+def analyze_mesh(mesh):
+    """Return the number of non-manifold edges and the volume of a mesh."""
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    non_manifold_edges = sum(1 for e in bm.edges if not e.is_manifold)
+    volume = bm.calc_volume()
+    bm.free()
+    return non_manifold_edges, volume
+
+
+def count_self_intersections(mesh):
+    """Return the number of pairs of triangles of a mesh that cross each other.
+
+    Triangles that share a vertex are ignored: neighbors always touch each other.
+    """
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bmesh.ops.triangulate(bm, faces=bm.faces)
+    tree = BVHTree.FromBMesh(bm)
+    bm.faces.ensure_lookup_table()
+    count = 0
+    for a, b in tree.overlap(tree):
+        if a < b and not {v.index for v in bm.faces[a].verts} & {
+            v.index for v in bm.faces[b].verts
+        }:
+            count += 1
+    bm.free()
+    return count
+
+
+def check_result(
+    base, solver, volume_before, non_manifold_before, hole_count, radius, depth
+):
+    """Look for signs of broken geometry in base after carving the holes.
+
+    Boolean solvers do not report problems: on meshes that are not clean, they can
+    silently produce broken or missing geometry. Log a warning for each sign found and
+    return them, so the caller can decide what to do.
+    """
+    non_manifold, volume = analyze_mesh(base.data)
+    removed = volume_before - volume
+    cutter_area = (
+        0.5 * CUTTER_VERTICES * radius**2 * math.sin(2 * math.pi / CUTTER_VERTICES)
+    )
+    expected = hole_count * cutter_area * depth
+
+    problems = []
+    if abs(removed - expected) > VOLUME_TOLERANCE * expected:
+        problems.append(
+            f"removed {removed:.1f} mm3 but about {expected:.1f} mm3 was expected "
+            f"(+/-{VOLUME_TOLERANCE:.0%}): holes may be missing, partial or outside the model"
+        )
+    if non_manifold > non_manifold_before:
+        problems.append(
+            f"carving added {non_manifold - non_manifold_before} non-manifold edge(s) "
+            f"({non_manifold_before} before, {non_manifold} after)"
+        )
+
+    for problem in problems:
+        logger.warning("%s solver result check failed: %s", solver, problem)
+    if not problems:
+        logger.info(
+            "%s solver result check passed: removed %.1f mm3 (expected %.1f), "
+            "%d non-manifold edge(s)",
+            solver,
+            removed,
+            expected,
+            non_manifold,
+        )
+    return problems
+
+
 def cut_holes(base, locations, rotation, radius, depth, solver=DEFAULT_SOLVER):
     """Subtract one cylinder per location from base, in a single Boolean pass.
 
@@ -160,7 +239,7 @@ def cut_holes(base, locations, rotation, radius, depth, solver=DEFAULT_SOLVER):
         bpy.ops.mesh.primitive_cylinder_add(
             radius=radius,
             depth=depth,
-            vertices=64,
+            vertices=CUTTER_VERTICES,
             location=location,
             rotation=rotation,
         )
@@ -201,6 +280,7 @@ def process_base(
     center=False,
     corners=False,
     solver=DEFAULT_SOLVER,
+    fallback=True,
 ):
     reset_scene()
     with timed("STL import"):
@@ -208,6 +288,17 @@ def process_base(
 
     base = bpy.context.selected_objects[0]
     bpy.context.view_layer.objects.active = base
+
+    with timed("Input mesh analysis"):
+        non_manifold_before, volume_before = analyze_mesh(base.data)
+        self_intersections = count_self_intersections(base.data)
+    logger.info(
+        "Input mesh: %d triangle(s), %d non-manifold edge(s), "
+        "%d self-intersecting triangle pair(s)",
+        len(base.data.polygons),
+        non_manifold_before,
+        self_intersections,
+    )
 
     # Calculate actual world-space bounding box
     bbox_corners = [
@@ -268,18 +359,38 @@ def process_base(
 
     for loc in positions:
         logger.debug("Carving hole at %s", tuple(round(v, 3) for v in loc))
+    # Keep the original mesh, in case the FAST solver fails and we need to start over
+    original_mesh = base.data.copy() if solver == "FAST" and fallback else None
+
+    used_solver = solver
     with timed(f"Carving {len(positions)} hole(s)"):
         cut_holes(base, positions, rot, hole_radius, cylinder_depth, solver)
+    with timed("Result check"):
+        problems = check_result(
+            base, solver, volume_before, non_manifold_before, len(positions), hole_radius, hole_depth
+        )
+
+    if problems and original_mesh is not None:
+        logger.warning("The FAST solver result looks broken: falling back to the EXACT solver")
+        base.data = original_mesh
+        used_solver = "EXACT"
+        with timed(f"Carving {len(positions)} hole(s) again"):
+            cut_holes(base, positions, rot, hole_radius, cylinder_depth, used_solver)
+        with timed("Result check"):
+            check_result(
+                base, used_solver, volume_before, non_manifold_before, len(positions), hole_radius, hole_depth
+            )
 
     with timed("STL export"):
         export_stl(output_stl)
 
     logger.info(
-        "Exported %s (%d hole(s): D=%.2fmm, H=%.2fmm)",
+        "Exported %s (%d hole(s): D=%.2fmm, H=%.2fmm, %s solver)",
         output_stl,
         len(positions),
         hole_diameter,
         hole_depth,
+        used_solver,
     )
 
 
@@ -331,6 +442,12 @@ if __name__ == "__main__":
         "quicker, but it does not handle meshes that are not clean: non-manifold "
         "edges, self-intersections, coplanar faces.",
     )
+    parser.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="With --solver FAST, do not fall back to the EXACT solver when the result "
+        "looks broken (the warnings are still logged).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -354,6 +471,7 @@ if __name__ == "__main__":
                 center=args.center,
                 corners=args.corners,
                 solver=args.solver,
+                fallback=not args.no_fallback,
             )
     except Exception:
         # Blender only prints the traceback to stderr: keep it in the log file too

@@ -10,7 +10,7 @@ SCRIPT="$(dirname "${BASH_SOURCE[0]}")/blender/carve-magnet-holes.py"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM] [--center] [--corners] [--solver EXACT|FAST]
+Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM] [--center] [--corners] [--solver EXACT|FAST] [--no-fallback]
 
   -i, --in DIR         Directory of input STL files (must contain an 'input' path component)
   -d, --diameter MM    Magnet diameter in mm (default: 5)
@@ -20,6 +20,7 @@ Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM] [--center] [--cor
   --solver SOLVER      Boolean solver, EXACT (default) or FAST (much quicker, but it does not handle
                        meshes that are not clean). When given, the output goes to a <SOLVER>-solver
                        subdirectory, e.g. .../25x25/FAST-solver, so you can compare the two solvers
+  --no-fallback        With --solver FAST, do not fall back to EXACT when the result looks broken
   -h, --help           Show this help
 EOF
 }
@@ -41,6 +42,7 @@ diameter="5"
 height="2"
 hole_flags=()
 solver=""
+extra_flags=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
         -d | --diameter) diameter="${2:?--diameter needs a value}"; shift 2 ;;
         -H | --height) height="${2:?--height needs a value}"; shift 2 ;;
         --center | --corners) hole_flags+=("$1"); shift ;;
+        --no-fallback) extra_flags+=("$1"); shift ;;
         --solver) solver="${2:?--solver needs a value}"; solver="${solver^^}"; shift 2 ;;
         -h | --help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -110,7 +113,7 @@ for f in "${files[@]}"; do
     out="$out_dir/${filename%.*}${suffix}.${filename##*.}"
     if ! blender -b --python-exit-code 1 -P "$SCRIPT" -- \
         --in "$f" --out "$out" --diameter "$diameter" --height "$height" "${hole_flags[@]}" \
-        ${solver:+--solver "$solver"}; then
+        ${solver:+--solver "$solver"} "${extra_flags[@]}"; then
         failed+=("$filename")
     fi
 done
