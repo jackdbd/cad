@@ -9,6 +9,7 @@ Some Blender and OpenSCAD scripts.
 - [Blender scripts](#blender-scripts)
   - [carve-magnet-holes.py](#carve-magnet-holespy)
   - [carve](#carve)
+  - [merge-on-edge.py](#merge-on-edgepy)
   - [Logging](#logging)
 - [OpenSCAD scripts](#openscad-scripts)
 
@@ -46,7 +47,8 @@ The devenv shell also provides these scripts:
 | Variable | Default | Defined in | Used by | Description |
 | --- | --- | --- | --- | --- |
 | `CARVE_LOG_LEVEL` | `INFO` (when unset) | you | `carve-magnet-holes.py`, `carve` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (case-insensitive). An invalid value logs a warning and falls back to `INFO`. See [Logging](#logging). |
-| `NO_COLOR` | unset | you | `carve-magnet-holes.py` | When set (to any value), log output on stdout is never colored. Colors are only used when stdout is a terminal. |
+| `MERGE_LOG_LEVEL` | `INFO` (when unset) | you | `merge-on-edge.py` | Log level of `merge-on-edge.py`, with the same values as `CARVE_LOG_LEVEL`. |
+| `NO_COLOR` | unset | you | `carve-magnet-holes.py`, `merge-on-edge.py` | When set (to any value), log output on stdout is never colored. Colors are only used when stdout is a terminal. |
 | `MAGNET_DIAMETER` | `5.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet diameter in mm, passed to the script as `--diameter`. |
 | `MAGNET_HEIGHT` | `2.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet height in mm, passed to the script as `--height`. |
 | `CLAUDE_CONFIG_DIR` | `/home/jack/.claude-zartis/` | `devenv.nix` | Claude Code | Directory where Claude Code keeps its configuration. |
@@ -157,22 +159,60 @@ Carve faster with the `FAST` solver:
 carve -i assets/input/wood-elf-bases/25x25 --center --corners --solver FAST
 ```
 
+### merge-on-edge.py
+
+Merges two models of miniature bases into one, on the edge where they touch. The first model (A) stays where it is, and the second one (B) is moved onto it.
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `-a`, `--in-a` | yes | Path to the first STL file. |
+| `-b`, `--in-b` | yes | Path to the second STL file. |
+| `-o`, `--out` | yes | Path to the merged STL file. Missing parent directories are created. |
+| `-h`, `--help` | no | Show the help and exit. |
+
+How it works:
+
+1. **Same bottom plane.** The thinnest dimension of a model is its height. B is moved along it until the bottoms of the two models are on the same plane, so their edges are not tilted. If the thinnest dimension is not the same axis in the two models, the script logs an error and exits.
+2. **Straight edges.** On each model, the candidate edges are the sharp edges (where two faces meet at more than 30°) that lie on the bottom plane, with the collinear ones that touch each other joined into one straight edge. Edges shorter than 20% of the longest dimension of the model are ignored, so a round or oval model, whose outline is made of many short edges, has no candidate: the script logs an error and exits.
+3. **Matching.** Every edge of A is compared with every edge of B. The error of a pair is the largest distance between corresponding ends, so it grows with an offset, a rotation or a difference in length. Pairs more than 2 mm apart do not match: if there is no other pair, the script logs an error and exits. Otherwise it uses the pair with the smallest error (the longest edge breaks a tie) and logs how many other pairs match.
+4. **Alignment.** If the ends are within 0.01 mm of each other, the script logs that the edges match perfectly (`INFO`). If not, it logs a warning with the offset, the rotation and the lengths of the two edges, and goes on. B is rotated around the height axis and moved, without deforming it, so that its edge lies on the edge of A. It is then pushed 0.01 mm into A, because walls that are coplanar only up to rounding errors make the union produce slivers, and the overlap also connects models that touch along an edge only.
+5. **Union.** The two models are merged with a Boolean union (`EXACT` solver), which removes the walls that were back to back, and the vertices closer than 0.001 mm are welded. If the merged model has more non-manifold edges than the two models together, the script logs a warning.
+
+The thresholds above are constants at the top of the script (`SHARP_ANGLE`, `MIN_EDGE_RATIO`, `PERFECT_TOLERANCE`, `COARSE_TOLERANCE`, `OVERLAP`, `WELD_DISTANCE`).
+
+Exit codes: `0` when the merged file was written (with or without warnings), `1` when the script logged an error, and `2` when the arguments are invalid. As with `carve-magnet-holes.py`, pass `--python-exit-code 1` to Blender if you check the exit code, otherwise an unexpected error exits with `0`.
+
+```sh
+blender -b --python-exit-code 1 -P blender/merge-on-edge.py -- \
+    --in-a assets/input/base-a.stl \
+    --in-b assets/input/base-b.stl \
+    --out assets/output/base-a-and-b.stl
+```
+
+Notes:
+
+- The script assumes that the models are placed next to each other, with the matching edges close together (within 2 mm), and that their bottoms are flat.
+- The merged model can have a few tiny non-manifold edges (two real 25 mm bases, merged side by side, ended up with 3 of them, 0.1 to 0.4 mm long and away from the seam). The script warns about them: check the result in a slicer.
+- Like `carve-magnet-holes.py`, the script writes a [log file](#logging).
+
 ### Logging
 
-`carve-magnet-holes.py` logs to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in the `logs/` directory of the repo, named like `carve-magnet-holes_2026-11-21_23-58-59.log` (UTC timestamp of the start of the run). Log files are gitignored. Each run writes its own file, and timestamps inside the log are in UTC too. Runs that only print the help or fail on invalid arguments do not create a log file.
+`carve-magnet-holes.py` and `merge-on-edge.py` log to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in the `logs/` directory of the repo, named like `carve-magnet-holes_2026-11-21_23-58-59.log` or `merge-on-edge_2026-11-21_23-58-59.log` (the script name and the UTC timestamp of the start of the run). Log files are gitignored. Each run writes its own file, and timestamps inside the log are in UTC too. Runs that only print the help or fail on invalid arguments do not create a log file.
 
-Set the level with the `CARVE_LOG_LEVEL` environment variable (`DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`):
+Set the level with the `CARVE_LOG_LEVEL` environment variable (`MERGE_LOG_LEVEL` for `merge-on-edge.py`): `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`:
 
 ```sh
 CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corners
 ```
 
-What is logged:
+What `carve-magnet-holes.py` logs:
 
 - `INFO`: the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
 - `DEBUG`: also the bounding box of the model, the detected height axis, the position of each hole and the number of self-intersecting triangle pairs of the input mesh.
 - `WARNING`: for example when `--corners` is ignored because the model is not rectangular, when a [result check](#result-checks) fails, or when the script falls back to the `EXACT` solver.
 - `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).
+
+`merge-on-edge.py` logs the command line arguments and the input and output filenames at `INFO`, then each step: the move to the same bottom plane, the number of straight edges of each model, the pair of edges it merges on (`INFO` for a perfect match, `WARNING` with the details otherwise), the welded vertices, and how long import, merge and export took. Errors (no straight edge, no matching edge, models oriented differently) and the warning about non-manifold edges are logged as described above.
 
 Messages printed by Blender itself (for example `Removed N degenerate triangles during import`) only go to stdout, not to the log file.
 
