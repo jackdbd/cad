@@ -1,4 +1,6 @@
-# Scripts for OpenSCAD
+# CAD
+
+Some Blender and OpenSCAD scripts.
 
 ## Table of Contents
 
@@ -14,13 +16,13 @@ This project defines a development environment in `devenv.nix`. You can obtain d
 devenv info
 ```
 
-When you want to work on the project, activate the devenv shell:
+When you want to work on this project, activate the devenv shell:
 
 ```sh
 devenv shell
 ```
 
-The project can be managed with a combination of [devenv tasks](https://devenv.sh/tasks/) and [scripts](https://devenv.sh/scripts/). You can see the list of tasks with this command:
+This project can be managed with a combination of [devenv tasks](https://devenv.sh/tasks/) and [scripts](https://devenv.sh/scripts/). From within the devenv shell, you can see the list of tasks with this command:
 
 ```sh
 task-list
@@ -28,19 +30,37 @@ task-list
 
 ## Blender scripts
 
+Show the help for the `subtract-magnet-hole.py` script:
+
 ```sh
 blender -b -P blender/subtract-magnet-hole.py -- --help
 ```
+
+Show the help for the `cad:subtract-magnet-hole` task:
+
+```sh
+devenv tasks run cad:subtract-magnet-hole:help
+```
+
+Run the `subtract-magnet-hole.py` script to carve a magnet socket into an STL file:
 
 ```sh
 blender -b -P blender/subtract-magnet-hole.py -- --in assets/input/base.stl --out assets/output/base_with_hole.stl --diameter 5.0 --height 2.0
 ```
 
-To carve magnet sockets into every STL file in a directory, run `carve` (a devenv script wrapping `carve.sh`). Output goes to the matching `assets/output/...` directory, with a `_with_<diameter>x<height>_magnet` suffix on each filename.
+Run the `cad:subtract-magnet-hole` task to carve a magnet socket into an STL file:
+
+```sh
+devenv tasks run cad:subtract-magnet-hole:run
+```
+
+Carve a magnet socket into every STL file found in a directory. Output goes to the matching `assets/output/...` directory, with a `_with_<diameter>x<height>_magnet` suffix on each filename.
 
 ```sh
 carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2
 # -> assets/output/wood-elf-bases/25x25/base 1_with_5x2_magnet.stl, ...
+
+./carve -i assets/input/wood-elf-bases/50x75 -d 5 -H 2
 ```
 
 ## OpenSCAD scripts

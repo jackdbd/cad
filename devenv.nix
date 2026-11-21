@@ -5,14 +5,13 @@
 }:
 
 {
-  enterShell = ''
-    hello
-  '';
+  enterShell = "";
 
   env = {
     # https://code.claude.com/docs/en/env-vars
     CLAUDE_CONFIG_DIR = "/home/jack/.claude-zartis/";
-    GREET = "world";
+    MAGNET_DIAMETER = "5.0";
+    MAGNET_HEIGHT = "2.0";
   };
 
   languages.python = {
@@ -36,10 +35,6 @@
       claude doctor
     '';
 
-    hello.exec = ''
-      echo hello from $GREET
-    '';
-
     task-list.exec = ''
       devenv tasks list
     '';
@@ -54,11 +49,17 @@
   };
 
   tasks = {
-    "cad:hello" = {
-      exec = ''echo "Hello, $GREET!"'';
+    "cad:subtract-magnet-hole:help" = {
+      exec = "blender -b -P blender/subtract-magnet-hole.py -- --help";
     };
-    "cad:goodbye" = {
-      exec = ''echo "Goodbye, $GREET!"'';
+    "cad:subtract-magnet-hole:run" = {
+      exec = ''
+        blender -b -P blender/subtract-magnet-hole.py -- \
+        --in assets/input/high-elf-bases/20x20/base-2.stl \
+        --out assets/output/high-elf-bases/20x20-with-holes/base-2_with_5x2_magnet.stl \
+        --diameter $MAGNET_DIAMETER \
+        --height $MAGNET_HEIGHT
+      '';
     };
   };
 }
