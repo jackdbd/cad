@@ -16,6 +16,10 @@ TOLERANCE = 0.2  # Clearance tolerance applied to both diameter and depth (in mm
 EXTRA_CUT = 0.5  # Overcut offset to cleanly puncture the outer bottom face
 DEFAULT_MAGNET_DIAMETER = 5.0  # mm
 DEFAULT_MAGNET_HEIGHT = 2.0  # mm
+SOLVERS = ("EXACT", "FAST")  # Boolean modifier solvers
+DEFAULT_SOLVER = "EXACT"
+# Blender renamed the FAST Boolean solver to FLOAT: try the names in order
+BLENDER_SOLVER_NAMES = {"EXACT": ("EXACT",), "FAST": ("FAST", "FLOAT")}
 # Distance from each model edge to the center of a corner hole, as a multiple of the magnet diameter
 CORNER_EDGE_DISTANCE_FACTOR = 1.0
 # How far inside each bounding-box corner the rectangularity probe is cast: small
@@ -145,7 +149,7 @@ def is_rectangular(base, height_idx, mins, maxs):
     return True
 
 
-def cut_holes(base, locations, rotation, radius, depth):
+def cut_holes(base, locations, rotation, radius, depth, solver=DEFAULT_SOLVER):
     """Subtract one cylinder per location from base, in a single Boolean pass.
 
     The EXACT solver re-processes the whole base mesh on every pass, so the cylinders
@@ -173,7 +177,13 @@ def cut_holes(base, locations, rotation, radius, depth):
     # Boolean difference
     mod_bool = base.modifiers.new(name="MagnetHole", type="BOOLEAN")
     mod_bool.operation = "DIFFERENCE"
-    mod_bool.solver = "EXACT"
+    available = {i.identifier for i in mod_bool.bl_rna.properties["solver"].enum_items}
+    blender_solver = next((n for n in BLENDER_SOLVER_NAMES[solver] if n in available), None)
+    if blender_solver is None:
+        raise ValueError(
+            f"This Blender has no {solver} Boolean solver (available: {sorted(available)})"
+        )
+    mod_bool.solver = blender_solver
     mod_bool.object = cutter
 
     bpy.context.view_layer.objects.active = base
@@ -184,7 +194,13 @@ def cut_holes(base, locations, rotation, radius, depth):
 
 
 def process_base(
-    input_stl, output_stl, magnet_diameter, magnet_height, center=False, corners=False
+    input_stl,
+    output_stl,
+    magnet_diameter,
+    magnet_height,
+    center=False,
+    corners=False,
+    solver=DEFAULT_SOLVER,
 ):
     reset_scene()
     with timed("STL import"):
@@ -253,7 +269,7 @@ def process_base(
     for loc in positions:
         logger.debug("Carving hole at %s", tuple(round(v, 3) for v in loc))
     with timed(f"Carving {len(positions)} hole(s)"):
-        cut_holes(base, positions, rot, hole_radius, cylinder_depth)
+        cut_holes(base, positions, rot, hole_radius, cylinder_depth, solver)
 
     with timed("STL export"):
         export_stl(output_stl)
@@ -306,6 +322,15 @@ if __name__ == "__main__":
         help="Carve a hole in each of the 4 corners of a rectangular model "
         "(ignored with a warning if the model is not rectangular)",
     )
+    parser.add_argument(
+        "--solver",
+        type=str.upper,
+        choices=SOLVERS,
+        default=DEFAULT_SOLVER,
+        help="Use the FAST solver instead of the EXACT one. The FAST solver is much "
+        "quicker, but it does not handle meshes that are not clean: non-manifold "
+        "edges, self-intersections, coplanar faces.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -317,6 +342,7 @@ if __name__ == "__main__":
     logger.info("Command line arguments: %s", shlex.join(argv))
     logger.info("Input file: %s", args.input)
     logger.info("Output file: %s", args.output)
+    logger.info("Boolean solver: %s", args.solver)
 
     try:
         with timed("Total"):
@@ -327,6 +353,7 @@ if __name__ == "__main__":
                 args.height,
                 center=args.center,
                 corners=args.corners,
+                solver=args.solver,
             )
     except Exception:
         # Blender only prints the traceback to stderr: keep it in the log file too

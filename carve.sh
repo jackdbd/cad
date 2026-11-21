@@ -10,13 +10,16 @@ SCRIPT="$(dirname "${BASH_SOURCE[0]}")/blender/carve-magnet-holes.py"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM] [--center] [--corners]
+Usage: $(basename "$0") --in DIR [--diameter MM] [--height MM] [--center] [--corners] [--solver EXACT|FAST]
 
   -i, --in DIR         Directory of input STL files (must contain an 'input' path component)
   -d, --diameter MM    Magnet diameter in mm (default: 5)
   -H, --height MM      Magnet height in mm (default: 2)
   --center             Carve a hole in the center of each model (default if no hole flag is given)
   --corners            Carve a hole in each corner of rectangular models
+  --solver SOLVER      Boolean solver, EXACT (default) or FAST (much quicker, but it does not handle
+                       meshes that are not clean). When given, the output goes to a <SOLVER>-solver
+                       subdirectory, e.g. .../25x25/FAST-solver, so you can compare the two solvers
   -h, --help           Show this help
 EOF
 }
@@ -37,6 +40,7 @@ in_dir=""
 diameter="5"
 height="2"
 hole_flags=()
+solver=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         -d | --diameter) diameter="${2:?--diameter needs a value}"; shift 2 ;;
         -H | --height) height="${2:?--height needs a value}"; shift 2 ;;
         --center | --corners) hole_flags+=("$1"); shift ;;
+        --solver) solver="${2:?--solver needs a value}"; solver="${solver^^}"; shift 2 ;;
         -h | --help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -66,6 +71,11 @@ for value in "$diameter" "$height"; do
     fi
 done
 
+if [[ -n "$solver" && "$solver" != "EXACT" && "$solver" != "FAST" ]]; then
+    echo "Solver must be EXACT or FAST: $solver" >&2
+    exit 2
+fi
+
 in_dir="${in_dir%/}"
 if [[ ! -d "$in_dir" ]]; then
     echo "Not a directory: $in_dir" >&2
@@ -77,6 +87,11 @@ case "/$in_dir/" in
     */input/*) out_dir="$(sed 's#\(^\|/\)input\(/\|$\)#\1output\2#' <<<"$in_dir")" ;;
     *) echo "Input directory must contain an 'input' path component: $in_dir" >&2; exit 2 ;;
 esac
+
+# Keep the results of the two solvers apart, so they are easy to compare
+if [[ -n "$solver" ]]; then
+    out_dir="$out_dir/${solver}-solver"
+fi
 
 suffix="_with_$(fmt "$diameter")x$(fmt "$height")_magnet"
 files=("$in_dir"/*.stl)
@@ -94,7 +109,8 @@ for f in "${files[@]}"; do
     filename="$(basename "$f")"
     out="$out_dir/${filename%.*}${suffix}.${filename##*.}"
     if ! blender -b --python-exit-code 1 -P "$SCRIPT" -- \
-        --in "$f" --out "$out" --diameter "$diameter" --height "$height" "${hole_flags[@]}"; then
+        --in "$f" --out "$out" --diameter "$diameter" --height "$height" "${hole_flags[@]}" \
+        ${solver:+--solver "$solver"}; then
         failed+=("$filename")
     fi
 done

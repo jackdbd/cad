@@ -67,6 +67,7 @@ Carves cylindrical magnet sockets into an STL file. Run it with Blender in backg
 | `-H`, `--height` | no | `2.0` | Magnet height in mm. |
 | `--center` | at least one of `--center` and `--corners` | | Carve a hole in the center of the model. |
 | `--corners` | | | Carve a hole in each of the 4 corners of a rectangular model. |
+| `--solver` | no | `EXACT` | Boolean solver: `EXACT` or `FAST` (case-insensitive). The `FAST` solver is much quicker, but it does not handle meshes that are not clean: non-manifold edges, self-intersections, coplanar faces. |
 | `-h`, `--help` | no | | Show the help and exit. |
 
 How it works:
@@ -76,6 +77,7 @@ How it works:
 - `--center` carves a hole in the center of the model.
 - `--corners` carves a hole in each of the 4 corners, with each hole centered one magnet diameter from the two nearest edges (`CORNER_EDGE_DISTANCE_FACTOR` in the script). It only applies to rectangular models: if a corner of the bounding box is not filled by the model (a probe is cast 0.5 mm inside each corner, so slightly rounded corners are tolerated), the script prints a warning and ignores `--corners`.
 - Pass both flags to carve 5 holes. All the holes are cut in a single Boolean operation.
+- The Boolean operation uses the `EXACT` solver, which is robust but slow on detailed models. `--solver FAST` uses the faster solver instead. Blender 5 calls it `FLOAT`: the script uses whichever name your Blender has. Check the result of `FAST` before you trust it, especially on models that are not clean.
 
 Exit codes:
 
@@ -121,11 +123,13 @@ devenv tasks run cad:carve-magnet-holes:run
 | `-H`, `--height` | no | `2` | Magnet height in mm (a positive number). |
 | `--center` | no | used if you pass neither flag | Carve a hole in the center of each model. |
 | `--corners` | no | | Carve a hole in each corner of each rectangular model. Pass both flags for 5 holes. |
+| `--solver` | no | `EXACT` in the script | `EXACT` or `FAST`, passed to the script (see above). When you pass it, the output goes to a `<SOLVER>-solver` subdirectory. |
 | `-h`, `--help` | no | | Show the help and exit. |
 
 How it works:
 
 - Output goes to the same path with the `input` component replaced by `output`, for example `assets/input/wood-elf-bases/25x25` becomes `assets/output/wood-elf-bases/25x25`. The directory is created if it does not exist.
+- With `--solver`, the output goes to a subdirectory named after the solver, so you can compare the two: `--solver FAST` writes to `assets/output/wood-elf-bases/25x25/FAST-solver` and `--solver EXACT` to `assets/output/wood-elf-bases/25x25/EXACT-solver`. Without `--solver` there is no such subdirectory.
 - Each output file keeps the name of the input file, with a `_with_<diameter>x<height>_magnet` suffix: `base 1.stl` becomes `base 1_with_5x2_magnet.stl`. Numbers are written without trailing zeros (`--diameter 6.0` gives `6`). The suffix does not say which holes were carved, so running `carve` again with different flags overwrites the previous files.
 - Files where no hole could be carved (for example `--corners` alone on a model that is not rectangular) are skipped. They are listed at the end and `carve` exits with `1`. It also exits with `1` when the directory does not exist or has no STL files, and with `2` when the arguments are invalid.
 - Each file is processed by its own Blender process, so each one gets its own [log file](#logging).
@@ -133,6 +137,15 @@ How it works:
 ```sh
 carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2 --center --corners
 # -> assets/output/wood-elf-bases/25x25/base 1_with_5x2_magnet.stl, ...
+```
+
+Compare the two solvers on the same models:
+
+```sh
+carve -i assets/input/wood-elf-bases/25x25 --center --corners --solver EXACT
+carve -i assets/input/wood-elf-bases/25x25 --center --corners --solver FAST
+# -> assets/output/wood-elf-bases/25x25/EXACT-solver/base 1_with_5x2_magnet.stl, ...
+# -> assets/output/wood-elf-bases/25x25/FAST-solver/base 1_with_5x2_magnet.stl, ...
 ```
 
 ### Logging
@@ -147,7 +160,7 @@ CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corn
 
 What is logged:
 
-- `INFO`: the log file path, the command line arguments, the input and output filenames, how long each phase took (`STL import`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `STL export` and `Total`), and the result.
+- `INFO`: the log file path, the command line arguments, the input and output filenames, the Boolean solver, how long each phase took (`STL import`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `STL export` and `Total`), and the result.
 - `DEBUG`: also the bounding box of the model, the detected height axis and the position of each hole.
 - `WARNING`: for example when `--corners` is ignored because the model is not rectangular.
 - `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).
