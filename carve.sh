@@ -6,7 +6,7 @@
 # and each file gets a `_with_<D>x<H>_magnet` suffix.
 set -euo pipefail
 
-SCRIPT="$(dirname "${BASH_SOURCE[0]}")/blender/subtract-magnet-hole.py"
+SCRIPT="$(dirname "${BASH_SOURCE[0]}")/blender/carve-magnet-holes.py"
 
 usage() {
     cat <<EOF

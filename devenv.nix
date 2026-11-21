@@ -49,12 +49,12 @@
   };
 
   tasks = {
-    "cad:subtract-magnet-hole:help" = {
-      exec = "blender -b -P blender/subtract-magnet-hole.py -- --help";
+    "cad:carve-magnet-holes:help" = {
+      exec = "blender -b -P blender/carve-magnet-holes.py -- --help";
     };
-    "cad:subtract-magnet-hole:run" = {
+    "cad:carve-magnet-holes:run" = {
       exec = ''
-        blender -b -P blender/subtract-magnet-hole.py -- \
+        blender -b -P blender/carve-magnet-holes.py -- \
         --in assets/input/high-elf-bases/20x20/base-2.stl \
         --out assets/output/high-elf-bases/20x20-with-holes/base-2_with_5x2_magnet.stl \
         --diameter $MAGNET_DIAMETER \
