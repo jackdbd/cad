@@ -16,9 +16,11 @@ import bpy
 import mathutils
 import numpy as np
 
-# Edges between faces that meet at a sharper angle than this are candidates to merge on
-SHARP_ANGLE = math.radians(30)
-# Neighboring edges within this angle of each other make up a single straight edge
+# The outline of the bottom stays within this distance of a straight edge. The outline of
+# a real model is made of many tiny edges, and not exactly straight.
+STRAIGHT_TOLERANCE = 0.1  # mm
+# Two straight edges that touch each other and have directions within this angle make up
+# a single straight edge
 STRAIGHT_ANGLE = math.radians(1)
 # How far from the bottom plane an edge can be and still lie on it
 BOTTOM_PLANE_TOLERANCE = 0.05  # mm
@@ -177,12 +179,69 @@ def count_non_manifold_edges(mesh):
     return count
 
 
-def find_straight_edges(obj, height_idx):
-    """Return the straight edges of the bottom outline of a model.
+def simplify_polyline(points, tolerance):
+    """Return the indices of the points that keep a polyline within tolerance of itself.
 
-    These are the sharp edges that lie on the bottom plane, with the collinear ones
-    that touch each other joined into a single edge. Short edges are left out: a
-    round model has many of them and no straight edge to merge on.
+    This is the Douglas-Peucker algorithm: the points between two consecutive indices
+    are within tolerance of the straight line that joins them.
+    """
+    keep = {0, len(points) - 1}
+    stack = [(0, len(points) - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j - i < 2:
+            continue
+        line = points[j] - points[i]
+        length = np.linalg.norm(line)
+        between = points[i + 1 : j] - points[i]
+        if length == 0:
+            distances = np.linalg.norm(between, axis=1)
+        else:
+            distances = np.linalg.norm(np.cross(between, line / length), axis=1)
+        k = int(np.argmax(distances))
+        if distances[k] > tolerance:
+            keep.add(i + 1 + k)
+            stack.extend([(i, i + 1 + k), (i + 1 + k, j)])
+    return sorted(keep)
+
+
+def straight_runs(points, closed):
+    """Split a polyline into straight runs: a list of (start point, end point)."""
+    if closed:
+        # Split the loop in two, at the point farthest from where it starts
+        k = int(np.argmax(np.linalg.norm(points - points[0], axis=1)))
+        parts = [points[: k + 1], np.vstack([points[k:], points[:1]])]
+    else:
+        parts = [points]
+    runs = []
+    for part in parts:
+        kept = simplify_polyline(part, STRAIGHT_TOLERANCE)
+        runs.extend((part[i], part[j]) for i, j in zip(kept, kept[1:]))
+
+    # Join the runs that go in the same direction (also across the start of a loop)
+    def collinear(a, b):
+        da, db = a[1] - a[0], b[1] - b[0]
+        norm = np.linalg.norm(da) * np.linalg.norm(db)
+        return norm > 0 and abs(da @ db) / norm >= math.cos(STRAIGHT_ANGLE)
+
+    joined = []
+    for run in runs:
+        if joined and collinear(joined[-1], run):
+            joined[-1] = (joined[-1][0], run[1])
+        else:
+            joined.append(run)
+    if closed and len(joined) > 1 and collinear(joined[-1], joined[0]):
+        joined[0] = (joined[-1][0], joined[0][1])
+        joined.pop()
+    return joined
+
+
+def find_straight_edges(obj, height_idx):
+    """Return the straight edges of the outline of the bottom of a model.
+
+    The bottom is the flat region of the model on the bottom plane, and its outline is
+    split into straight edges. Short edges are left out: a round model has many of them
+    and no straight edge to merge on.
     """
     coords = vertex_coordinates(obj)
     bottom = coords[:, height_idx].min()
@@ -195,48 +254,53 @@ def find_straight_edges(obj, height_idx):
     on_bottom = np.nonzero(np.abs(coords[:, height_idx] - bottom) <= BOTTOM_PLANE_TOLERANCE)[0]
     on_bottom = {bm.verts[i] for i in on_bottom}
 
-    # Sharp edges on the bottom plane (an edge with a single face is the border of a hole)
-    sharp = {}
-    for vert in on_bottom:
-        for edge in vert.link_edges:
-            if edge.other_vert(vert) in on_bottom and edge.index not in sharp:
-                if edge.calc_face_angle(math.pi) > SHARP_ANGLE:
-                    sharp[edge.index] = edge
-    edges = list(sharp.values())
-    directions = [(e.verts[1].co - e.verts[0].co).normalized() for e in edges]
+    # The faces of the bottom, and the edges that have a single face of the bottom
+    bottom_faces = {
+        f.index
+        for v in on_bottom
+        for f in v.link_faces
+        if all(other in on_bottom for other in f.verts)
+    }
+    bm.faces.ensure_lookup_table()
+    outline = {}
+    for index in bottom_faces:
+        for edge in bm.faces[index].edges:
+            if sum(f.index in bottom_faces for f in edge.link_faces) == 1:
+                outline[edge.index] = edge
 
-    # Join the edges that touch each other and have the same direction
-    parent = list(range(len(edges)))
-
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    at_vertex = {}
-    for i, edge in enumerate(edges):
+    # Follow the outline from vertex to vertex, to get its polylines
+    neighbors = {}
+    for edge in outline.values():
         for vert in edge.verts:
-            at_vertex.setdefault(vert.index, []).append(i)
-    for indices in at_vertex.values():
-        for i in indices:
-            for j in indices:
-                if abs(directions[i].dot(directions[j])) >= math.cos(STRAIGHT_ANGLE):
-                    parent[find(i)] = find(j)
+            neighbors.setdefault(vert.index, []).append(edge)
+    visited = set()
 
-    groups = {}
-    for i in range(len(edges)):
-        groups.setdefault(find(i), []).append(i)
+    def extend(chain, last_edge):
+        """Add vertices to the end of chain while the outline goes on without a fork."""
+        while len(neighbors[chain[-1].index]) == 2:
+            following = [e for e in neighbors[chain[-1].index] if e is not last_edge]
+            if not following or following[0].index in visited:
+                break
+            last_edge = following[0]
+            visited.add(last_edge.index)
+            chain.append(last_edge.other_vert(chain[-1]))
+        return chain
 
     straight_edges = []
-    for indices in groups.values():
-        direction = directions[indices[0]]
-        origin = edges[indices[0]].verts[0].co
-        verts = {v for i in indices for v in edges[i].verts}
-        ends = sorted(verts, key=lambda v: (v.co - origin).dot(direction))
-        edge = Edge(ends[0].co.copy(), ends[-1].co.copy())
-        if (edge.p1 - edge.p0).length >= min_length:
-            straight_edges.append(edge)
+    for edge in outline.values():
+        if edge.index in visited:
+            continue
+        visited.add(edge.index)
+        chain = extend([edge.verts[0], edge.verts[1]], edge)
+        closed = chain[0] is chain[-1]
+        if not closed:
+            chain = extend(chain[::-1], edge)[::-1]
+        points = np.array([v.co[:] for v in (chain[:-1] if closed else chain)])
+        for start, end in straight_runs(points, closed):
+            if np.linalg.norm(end - start) >= min_length:
+                straight_edges.append(
+                    Edge(mathutils.Vector(start.tolist()), mathutils.Vector(end.tolist()))
+                )
     bm.free()
     return straight_edges
 
