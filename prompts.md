@@ -34,3 +34,27 @@ Please add this as a devenv script too, like `hello` or `task-list`.
 ---
 
 Update the README.md file to include the new script and its usage. Then commit.
+
+## 21/11/2026
+
+I have this Blender script @subtract-magnet-hole.py that takes an input STL file, subtracts a cylindrical hole from the center of the 3d model, and outputs a new STL file.
+
+I now want to update the script so that it does this only when passed the --center flag.
+
+Then I want to add a new flag, --corners, that will subtract a hole (same diameter and height) from the 4 corners of the model instead of the center. Each corner should take into account the magnet diameter, so a 5mm diameter magnet should be subtracted from each corner, with the center of the hole being 2.5mm from each edge of the model.
+
+One can pass both the --center and the --corners flags, so one could carve a total of 5 holes (1 center + 4 corners). If no flag is passed, the script should print the help message and exit.
+
+The script should also print a warning if the --corners flag is passed but the model is not rectangular, and then ignore the flag.
+
+---
+
+I noticed the holes at the corners need more space from the edges, so I want to change the distance from the edge to be equal to the magnet diameter, instead of half the diameter. So a 5mm diameter magnet should be subtracted from each corner, with the center of the hole being 5mm from each edge of the model. I don't want this "diameter multiplier from the edge" to be configurable, but I think it's a good idea to define it as a constant in the script, so that if I want to change it in the future I can do it in one place.
+
+---
+
+Rename the `subtract-magnet-hole.py` into `carve-magnet-holes.py`. Make sure to update all references to the script in `README.md`, `devenv.nix` and `carve.sh`.
+
+---
+
+I think it's time to implement proper logging in `blender/subtract-magnet-hole.py`. Remove all print statements and replace them with logging calls. The script should log to stdout and at the same time log a file in the `logs` directory (which should be gitignored except for its README), and the log filename should be the same as the python script, but with an UTC timestamp (e.g. 2026-11-21_23-58-59) and the `.log` extension. Make sure to create the `logs` directory if it does not exist. It would be nice to have colors in the stdout output, but not in the log file. The logging level should be configurable via an environment variable, with a default of INFO. The script should log the command line arguments it was called with, and also log the input and output filenames.
