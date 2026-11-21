@@ -172,6 +172,7 @@ Merges two models of miniature bases into one, on the edge where they touch. The
 | `-a`, `--in-a` | yes | Path to the first STL file. |
 | `-b`, `--in-b` | yes | Path to the second STL file. |
 | `-o`, `--out` | yes | Path to the merged STL file. Missing parent directories are created. |
+| `--hole-tolerant` | no | Use the hole tolerant option of the `EXACT` solver for the union: it leaves far fewer non-manifold edges at the seam of models that are not clean, but takes 5 to 10 times longer. |
 | `-h`, `--help` | no | Show the help and exit. |
 
 How it works:
@@ -180,7 +181,7 @@ How it works:
 2. **Straight edges.** On each model, the candidate edges are the straight edges of the outline of the flat bottom (the edges where the faces on the bottom plane meet other faces). The outline of a real model is made of many tiny edges and is not exactly straight, so it is split into runs that stay within 0.1 mm of a straight line. Edges shorter than 20% of the longest dimension of the model are ignored, so a round or oval model, whose outline is made of many short edges, has no candidate: the script logs an error and exits. Straight edges on the same line are joined, even with a gap between them (a notch in the outline), if the gap is at most 10% of the length of the joined edge.
 3. **Matching.** The models can be anywhere in the files. The script takes the pairs of an edge of A and an edge of B, the closest pair first (the one that asks for the smallest move of B), and stops at the first pair where the two edges have about the same length (within 2 mm), are about parallel (within 5°), and have the models on opposite sides (they touch instead of overlapping, and B only needs a small rotation). If no pair matches, the script logs an error with the number of pairs rejected for each reason, and exits.
 4. **Alignment.** If the lengths of the two edges differ by less than 0.01 mm and the rotation is below 0.1°, the script logs that the edges match perfectly (`INFO`). If not, it logs a warning with the length difference and the rotation, and goes on. B is rotated around the height axis and moved, without deforming it, so that its edge lies on the edge of A. It is then pushed 0.01 mm into A, because walls that are coplanar only up to rounding errors make the union produce slivers, and the overlap also connects models that touch along an edge only.
-5. **Union.** The two models are merged with a Boolean union (`EXACT` solver), which removes the walls that were back to back, and the vertices closer than 0.001 mm are welded.
+5. **Union.** The two models are merged with a Boolean union (`EXACT` solver), which removes the walls that were back to back, and the vertices closer than 0.001 mm are welded. With `--hole-tolerant`, the union uses the hole tolerant option of the solver, which copes better with models that are not clean. On two pairs of scenic bases of about 2 million triangles, it took 5.5 and 6.5 minutes instead of about 45 seconds, and the non-manifold edges of the result went from 6,982 to 234 and from 3,476 to 387. The volume of one result was 0.27% below the sum of the two models, which the result check allows (2%).
 6. **Result check.** A Boolean solver can fail without any error: for example, Blender's `MANIFOLD` solver returns only one of the two models when they are not clean enough. So the script checks that the merged model has the bounding box of the two models (within 0.1 mm) and the sum of their volumes (within 2%). If not, it logs an error for each problem and exits with `1`: **no file is written**. If the merged model has more non-manifold edges than the two models together, it logs a warning.
 
 The thresholds above are constants at the top of the script (`OVERLAP`, `WELD_DISTANCE`, `BOUNDING_BOX_TOLERANCE`, `VOLUME_TOLERANCE`) and at the top of `blender/base_geometry.py` (`STRAIGHT_TOLERANCE`, `STRAIGHT_ANGLE`, `JOIN_TOLERANCE`, `MAX_GAP_RATIO`, `MIN_EDGE_RATIO`, `PERFECT_TOLERANCE`, `PERFECT_ANGLE`, `COARSE_TOLERANCE`, `MAX_ROTATION`).
@@ -197,7 +198,7 @@ blender -b --python-exit-code 1 -P blender/merge-on-edge.py -- \
 Notes:
 
 - The script assumes that the bottoms of the models are flat and that the models lie flat with the same axis as height.
-- The merged model can have tiny non-manifold edges along the seam. Two real 25 mm bases ended up with 3 of them (0.1 to 0.4 mm long). Two scenic bases about 30 mm thick (50x100 and 100x100, with sculpted walls) ended up with thousands, because the union of two rough walls creates many tiny slivers: the script warns about them, so check the result in a slicer.
+- The merged model can have tiny non-manifold edges along the seam. Two real 25 mm bases ended up with 3 of them (0.1 to 0.4 mm long). Two scenic bases about 30 mm thick (50x100 and 100x100, with sculpted walls) ended up with thousands, because the union of two rough walls creates many tiny slivers: the script warns about them, so check the result in a slicer. `--hole-tolerant` leaves far fewer of them.
 - Like `carve-magnet-holes.py`, the script writes a [log file](#logging).
 
 ### preview-pairs.py

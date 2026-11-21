@@ -51,18 +51,22 @@ def overlap_transform(obj, edge, axis_idx):
     return mathutils.Matrix.Translation(normal * OVERLAP)
 
 
-def merge_models(obj_a, obj_b):
+def merge_models(obj_a, obj_b, hole_tolerant=False):
     """Merge obj_b into obj_a with a union (EXACT solver).
 
     The union takes care of walls that are back to back, with a different triangulation
     on each side, which would be left inside the model by a simple weld. Vertices closer
     than WELD_DISTANCE are then welded. Return the number of welded vertices.
+
+    The hole tolerant option of the solver copes better with models that are not clean:
+    it leaves far fewer non-manifold edges at the seam, but it is much slower.
     """
     bpy.ops.object.select_all(action="DESELECT")
     bpy.context.view_layer.objects.active = obj_a
     mod_bool = obj_a.modifiers.new(name="Merge", type="BOOLEAN")
     mod_bool.operation = "UNION"
     mod_bool.solver = "EXACT"
+    mod_bool.use_hole_tolerant = hole_tolerant
     mod_bool.object = obj_b
     bpy.ops.object.modifier_apply(modifier=mod_bool.name)
     bpy.data.objects.remove(obj_b, do_unlink=True)
@@ -109,7 +113,7 @@ def check_result(obj, expected_min, expected_max, expected_volume):
     return problems, non_manifold, volume
 
 
-def process_models(input_a, input_b, output):
+def process_models(input_a, input_b, output, hole_tolerant=False):
     common.reset_scene()
     with timed("STL import"):
         obj_a = geometry.import_model(input_a)
@@ -202,8 +206,10 @@ def process_models(input_a, input_b, output):
     volume_before = sum(volume for _, volume in before)
     coords = np.vstack([geometry.vertex_coordinates(obj_a), geometry.vertex_coordinates(obj_b)])
     expected_min, expected_max = coords.min(axis=0), coords.max(axis=0)
+    if hole_tolerant:
+        logger.info("Union with the hole tolerant option: this can take several minutes")
     with timed("Merge"):
-        welded = merge_models(obj_a, obj_b)
+        welded = merge_models(obj_a, obj_b, hole_tolerant)
     logger.info("%d vertex(es) welded after the union", welded)
 
     with timed("Result check"):
@@ -255,6 +261,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "-o", "--out", required=True, help="Path to the merged STL file"
     )
+    parser.add_argument(
+        "--hole-tolerant",
+        action="store_true",
+        help="Use the hole tolerant option of the EXACT solver: it leaves far fewer "
+        "non-manifold edges at the seam of models that are not clean, but it takes 5 to 10 "
+        "times longer (about 5 minutes for two dense bases).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -266,7 +279,7 @@ if __name__ == "__main__":
 
     try:
         with timed("Total"):
-            process_models(args.in_a, args.in_b, args.out)
+            process_models(args.in_a, args.in_b, args.out, args.hole_tolerant)
     except Exception:
         # Blender only prints the traceback to stderr: keep it in the log file too
         logger.exception("Failed to merge %s and %s", args.in_a, args.in_b)
