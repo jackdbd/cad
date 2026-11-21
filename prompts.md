@@ -58,3 +58,22 @@ Rename the `subtract-magnet-hole.py` into `carve-magnet-holes.py`. Make sure to 
 ---
 
 I think it's time to implement proper logging in `blender/carve-magnet-holes.py`. Remove all print statements and replace them with logging calls. The script should log to stdout and at the same time log a file in the `logs` directory (which should be gitignored except for its README), and the log filename should be the same as the python script, but with an UTC timestamp (e.g. 2026-11-21_23-58-59) and the `.log` extension. Make sure to create the `logs` directory if it does not exist. It would be nice to have colors in the stdout output, but not in the log file. The logging level should be configurable via an environment variable, with a default of INFO. The script should log the command line arguments it was called with, and also log the input and output filenames.
+
+---
+
+The Blender scrpt is quite slow. I want more insights in which phases of the script are taking more time. I want to add timers to the STL import and export phases, and log how long they took. For now I can only see these timers:
+
+```txt
+Timer 'STL Import' took 386.80 ms
+Timer 'STL Export' took 193.03 ms
+```
+
+---
+
+In @logs/README.md, mention that the timestamp in the log filename is in UTC, and that the log files are gitignored except for this README.md file.
+
+---
+
+Make sure each environment variable and command line argument is documented in the README.md file, and that the README.md file is up to date with the latest changes in the script.
+
+---

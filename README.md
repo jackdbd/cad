@@ -71,6 +71,16 @@ carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2 --center --corners
 ./carve.sh -i assets/input/wood-elf-bases/50x75 -d 5 -H 2 --center --corners
 ```
 
+### Logging
+
+`carve-magnet-holes.py` logs to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in `logs/`, named like `carve-magnet-holes_2026-11-21_23-58-59.log` (UTC timestamp). Each run writes its own file. The log includes the command line arguments and the input and output filenames.
+
+Set the level with the `CARVE_LOG_LEVEL` environment variable (`DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`):
+
+```sh
+CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corners
+```
+
 ## OpenSCAD scripts
 
 First, center the model using `trimesh` (WIP):

@@ -1,6 +1,13 @@
 import argparse
+import copy
+import logging
 import os
+import shlex
 import sys
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 
 import bpy
 import mathutils
@@ -14,6 +21,84 @@ CORNER_EDGE_DISTANCE_FACTOR = 1.0
 # How far inside each bounding-box corner the rectangularity probe is cast: small
 # corner rounding is tolerated, as the corner holes still fit inside it
 CORNER_PROBE_INSET = 0.5  # mm
+
+LOG_LEVEL_ENV_VAR = "CARVE_LOG_LEVEL"
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+DEFAULT_LOG_LEVEL = "INFO"
+LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+logger = logging.getLogger(Path(__file__).stem)
+
+
+class ColorFormatter(logging.Formatter):
+    """Formatter that colors the level name with ANSI escape codes."""
+
+    RESET = "\033[0m"
+    COLORS = {
+        logging.DEBUG: "\033[36m",
+        logging.INFO: "\033[32m",
+        logging.WARNING: "\033[33m",
+        logging.ERROR: "\033[31m",
+        logging.CRITICAL: "\033[1;31m",
+    }
+
+    def format(self, record):
+        # Format a copy: the file handler shares the record and must stay uncolored
+        record = copy.copy(record)
+        color = self.COLORS.get(record.levelno, "")
+        record.levelname = f"{color}{record.levelname:<8}{self.RESET}"
+        return super().format(record)
+
+
+def setup_logging():
+    """Log to stdout (colored on a terminal) and to a timestamped file in LOGS_DIR."""
+    requested = os.environ.get(LOG_LEVEL_ENV_VAR, DEFAULT_LOG_LEVEL).strip().upper()
+    invalid_level = requested not in LOG_LEVELS
+    level = getattr(logging, DEFAULT_LOG_LEVEL if invalid_level else requested)
+
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    log_path = LOGS_DIR / f"{Path(__file__).stem}_{timestamp}.log"
+
+    plain_format = "%(asctime)s %(levelname)-8s %(message)s"
+    file_formatter = logging.Formatter(plain_format, LOG_DATE_FORMAT)
+    stdout_formatter = file_formatter
+    if sys.stdout.isatty() and "NO_COLOR" not in os.environ:
+        stdout_formatter = ColorFormatter("%(asctime)s %(levelname)s %(message)s", LOG_DATE_FORMAT)
+    # Timestamps in UTC, like the log filename
+    file_formatter.converter = stdout_formatter.converter = time.gmtime
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(stdout_formatter)
+    # Append, so two runs starting within the same second never overwrite each other
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setFormatter(file_formatter)
+
+    logger.setLevel(level)
+    logger.propagate = False
+    logger.addHandler(stdout_handler)
+    logger.addHandler(file_handler)
+
+    logger.info("Logging to %s", log_path)
+    if invalid_level:
+        logger.warning(
+            "Invalid %s=%r (expected one of %s): using %s",
+            LOG_LEVEL_ENV_VAR,
+            requested,
+            ", ".join(LOG_LEVELS),
+            DEFAULT_LOG_LEVEL,
+        )
+
+
+@contextmanager
+def timed(label, level=logging.INFO):
+    """Log how long the wrapped block took, even if it raises."""
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        logger.log(level, "%s took %.2f ms", label, (time.perf_counter() - start) * 1000)
 
 
 def reset_scene():
@@ -87,7 +172,8 @@ def process_base(
     input_stl, output_stl, magnet_diameter, magnet_height, center=False, corners=False
 ):
     reset_scene()
-    import_stl(input_stl)
+    with timed("STL import"):
+        import_stl(input_stl)
 
     base = bpy.context.selected_objects[0]
     bpy.context.view_layer.objects.active = base
@@ -100,10 +186,16 @@ def process_base(
     mins = [min(v[i] for v in bbox_corners) for i in range(3)]
     maxs = [max(v[i] for v in bbox_corners) for i in range(3)]
     centers = [(lo + hi) / 2.0 for lo, hi in zip(mins, maxs)]
+    logger.debug(
+        "Bounding box: min=%s max=%s",
+        [round(v, 3) for v in mins],
+        [round(v, 3) for v in maxs],
+    )
 
     # Auto-detect the height axis (smallest thickness)
     height_idx = min(range(3), key=lambda i: maxs[i] - mins[i])
     plane_idx = [i for i in range(3) if i != height_idx]
+    logger.debug("Detected height axis: %s", "XYZ"[height_idx])
 
     # Calculate hole dimensions including tolerance
     hole_diameter = magnet_diameter + TOLERANCE
@@ -129,29 +221,35 @@ def process_base(
         positions.append(location(centers[plane_idx[0]], centers[plane_idx[1]]))
 
     if corners:
-        if is_rectangular(base, height_idx, mins, maxs):
+        with timed("Rectangularity check"):
+            rectangular = is_rectangular(base, height_idx, mins, maxs)
+        if rectangular:
             inset = magnet_diameter * CORNER_EDGE_DISTANCE_FACTOR
             for a in (mins[plane_idx[0]] + inset, maxs[plane_idx[0]] - inset):
                 for b in (mins[plane_idx[1]] + inset, maxs[plane_idx[1]] - inset):
                     positions.append(location(a, b))
         else:
-            print(
-                "[WARNING] --corners ignored: the model is not rectangular",
-                file=sys.stderr,
-            )
+            logger.warning("--corners ignored: the model is not rectangular")
 
     if not positions:
-        print("[ERROR] No holes to carve: nothing was exported", file=sys.stderr)
+        logger.error("No holes to carve: nothing was exported")
         sys.exit(1)
 
-    for loc in positions:
-        cut_hole(base, loc, rot, hole_radius, cylinder_depth)
+    with timed(f"Carving {len(positions)} hole(s)"):
+        for loc in positions:
+            logger.debug("Carving hole at %s", tuple(round(v, 3) for v in loc))
+            with timed("Hole", logging.DEBUG):
+                cut_hole(base, loc, rot, hole_radius, cylinder_depth)
 
-    export_stl(output_stl)
+    with timed("STL export"):
+        export_stl(output_stl)
 
-    print(
-        f"[SUCCESS] Exported: {output_stl} "
-        f"({len(positions)} hole(s): D={hole_diameter:.2f}mm, H={hole_depth:.2f}mm)"
+    logger.info(
+        "Exported %s (%d hole(s): D=%.2fmm, H=%.2fmm)",
+        output_stl,
+        len(positions),
+        hole_diameter,
+        hole_depth,
     )
 
 
@@ -201,11 +299,22 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(2)
 
-    process_base(
-        args.input,
-        args.output,
-        args.diameter,
-        args.height,
-        center=args.center,
-        corners=args.corners,
-    )
+    setup_logging()
+    logger.info("Command line arguments: %s", shlex.join(argv))
+    logger.info("Input file: %s", args.input)
+    logger.info("Output file: %s", args.output)
+
+    try:
+        with timed("Total"):
+            process_base(
+                args.input,
+                args.output,
+                args.diameter,
+                args.height,
+                center=args.center,
+                corners=args.corners,
+            )
+    except Exception:
+        # Blender only prints the traceback to stderr: keep it in the log file too
+        logger.exception("Failed to process %s", args.input)
+        raise
