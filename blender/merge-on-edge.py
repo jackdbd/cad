@@ -24,13 +24,23 @@ STRAIGHT_TOLERANCE = 0.1  # mm
 STRAIGHT_ANGLE = math.radians(1)
 # How far from the bottom plane an edge can be and still lie on it
 BOTTOM_PLANE_TOLERANCE = 0.05  # mm
+# Two straight edges on the same line make up a single edge if they are within this
+# distance of the line through both, and the gap (a notch in the outline) between them is
+# at most this fraction of the length of the joined edge
+JOIN_TOLERANCE = 0.5  # mm
+MAX_GAP_RATIO = 0.1
 # Shortest straight edge to merge on, as a fraction of the longest dimension of its
 # model. It rules out the many short edges that approximate a circle or an oval.
 MIN_EDGE_RATIO = 0.2
-# Edges whose ends are closer than this to each other match perfectly
+# Two edges match perfectly if their lengths differ by less than this, and their
+# directions by less than PERFECT_ANGLE
 PERFECT_TOLERANCE = 0.01  # mm
-# Edges whose ends are farther than this from each other do not match at all
+PERFECT_ANGLE = math.radians(0.1)
+# Two edges do not match at all if their lengths differ by more than this (the outline of
+# a real model is rounded at the corners), or if their directions differ by more than
+# MAX_ROTATION
 COARSE_TOLERANCE = 2.0  # mm
+MAX_ROTATION = math.radians(5)
 # The second model is pushed this far into the first one before the union. Walls that
 # are coplanar only up to rounding errors make the union produce slivers, and an overlap
 # also joins models that touch along an edge. It is below the resolution of a 3D printer.
@@ -236,6 +246,47 @@ def straight_runs(points, closed):
     return joined
 
 
+def join_edges(a, b):
+    """Return the edge that joins two edges on the same line, or None.
+
+    The two edges can have a gap between them, like the two sides of a notch.
+    """
+    da, db = a.p1 - a.p0, b.p1 - b.p0
+    if abs(da.dot(db)) / (da.length * db.length) < math.cos(STRAIGHT_ANGLE):
+        return None
+    direction = da.normalized()
+    points = [a.p0, a.p1, b.p0, b.p1]
+    along = [(p - a.p0).dot(direction) for p in points]
+    start, end = points[along.index(min(along))], points[along.index(max(along))]
+    line = (end - start).normalized()
+    if any((p - start).cross(line).length > JOIN_TOLERANCE for p in points):
+        return None
+    runs = sorted([sorted(along[:2]), sorted(along[2:])])
+    gap = max(0.0, runs[1][0] - runs[0][1])
+    if gap > MAX_GAP_RATIO * (end - start).length:
+        return None
+    return Edge(start.copy(), end.copy())
+
+
+def join_collinear_edges(edges):
+    """Join the edges that are on the same line, until no more can be joined."""
+    edges = list(edges)
+    joined = True
+    while joined:
+        joined = False
+        for i in range(len(edges)):
+            for j in range(i + 1, len(edges)):
+                edge = join_edges(edges[i], edges[j])
+                if edge is not None:
+                    edges[i] = edge
+                    del edges[j]
+                    joined = True
+                    break
+            if joined:
+                break
+    return edges
+
+
 def find_straight_edges(obj, height_idx):
     """Return the straight edges of the outline of the bottom of a model.
 
@@ -302,19 +353,55 @@ def find_straight_edges(obj, height_idx):
                     Edge(mathutils.Vector(start.tolist()), mathutils.Vector(end.tolist()))
                 )
     bm.free()
-    return straight_edges
+    return join_collinear_edges(straight_edges)
 
 
-def edge_error(a, b):
-    """Return how far the ends of two edges are from each other, and whether b is flipped.
+def match_edges(edges_a, edges_b, center_a, center_b, axis_idx):
+    """Return the first pair of edges that match, with how they differ.
 
-    The error is the largest distance between corresponding ends, pairing them in
-    the way that gives the smallest one. It grows with an offset, a rotation or a
-    difference in length of the two edges.
+    Take the pairs of an edge of a and an edge of b, the closest pair first (the one that
+    asks for the smallest move of b), and keep the first one where the two edges:
+    - have about the same length (within COARSE_TOLERANCE);
+    - are about parallel (within MAX_ROTATION), so b only needs a small rotation;
+    - have the models on the opposite sides, once the two edges are on each other (the
+      models touch instead of overlapping). A model lies on the side of its edge where
+      its center is.
+
+    Where the models are in the files only decides the order: it does not stop edges that
+    are far apart from matching. Return (edge a, edge b, whether edge b has to be
+    flipped, rotation, length difference), or None if no pair matches. Also return how
+    many pairs were rejected for each reason.
     """
-    straight = max((a.p0 - b.p0).length, (a.p1 - b.p1).length)
-    crossed = max((a.p0 - b.p1).length, (a.p1 - b.p0).length)
-    return (crossed, True) if crossed < straight else (straight, False)
+    axis = mathutils.Vector([1.0 if i == axis_idx else 0.0 for i in range(3)])
+    rejected = {"length": 0, "direction": 0, "side": 0}
+
+    def distance(pair):
+        a, b = pair
+        return ((a.p0 + a.p1) / 2 - (b.p0 + b.p1) / 2).length
+
+    pairs = sorted(((a, b) for a in edges_a for b in edges_b), key=distance)
+    for edge_a, edge_b in pairs:
+        da, db = edge_a.p1 - edge_a.p0, edge_b.p1 - edge_b.p0
+        length_difference = abs(da.length - db.length)
+        if length_difference > COARSE_TOLERANCE:
+            rejected["length"] += 1
+            continue
+        flipped = da.dot(db) < 0
+        if flipped:
+            db = -db
+        rotation = math.atan2(db.cross(da).dot(axis), db.dot(da))
+        if abs(rotation) > MAX_ROTATION:
+            rejected["direction"] += 1
+            continue
+        # The side of its edge where each model lies, along the same normal
+        normal = axis.cross(da)
+        side_a = normal.dot(center_a - (edge_a.p0 + edge_a.p1) / 2)
+        side_b = normal.dot(center_b - (edge_b.p0 + edge_b.p1) / 2)
+        if side_a * side_b > 0:
+            rejected["side"] += 1
+            continue
+        return (edge_a, edge_b, flipped, rotation, length_difference), rejected
+    return None, rejected
 
 
 def alignment_transform(a, b, flipped, axis_idx):
@@ -412,46 +499,51 @@ def process_models(input_a, input_b, output):
                 filepath,
             )
 
-    # Step 3: pick the pair of edges that matches best
-    pairs = []
-    for edge_a in straight_edges[0]:
-        for edge_b in straight_edges[1]:
-            error, flipped = edge_error(edge_a, edge_b)
-            if error <= COARSE_TOLERANCE:
-                pairs.append((error, -(edge_a.p1 - edge_a.p0).length, edge_a, edge_b, flipped))
-    if not pairs:
-        closest = min(
-            edge_error(a, b)[0] for a in straight_edges[0] for b in straight_edges[1]
-        )
+    # Step 3: look for the first pair of edges that match
+    centers = []
+    for obj in (obj_a, obj_b):
+        coords = vertex_coordinates(obj)
+        centers.append(mathutils.Vector((coords.min(axis=0) + coords.max(axis=0)) / 2))
+    match, rejected = match_edges(
+        straight_edges[0], straight_edges[1], centers[0], centers[1], height_idx
+    )
+    if match is None:
         fail(
-            "No edge of %s matches an edge of %s: the closest pair is %.3f mm apart, "
-            "more than the %.3f mm tolerance",
+            "No edge of %s matches an edge of %s. Pairs of edges rejected because the "
+            "lengths differ by more than %.1f mm: %d; because they are not parallel "
+            "(within %.1f deg): %d; because the models would overlap: %d",
             input_a,
             input_b,
-            closest,
             COARSE_TOLERANCE,
+            rejected["length"],
+            math.degrees(MAX_ROTATION),
+            rejected["direction"],
+            rejected["side"],
         )
-    pairs.sort(key=lambda pair: pair[:2])
-    error, _, edge_a, edge_b, flipped = pairs[0]
-    if len(pairs) > 1:
-        logger.info("%d other pair(s) of edges also match: merging on the best one", len(pairs) - 1)
+    edge_a, edge_b, flipped, rotation, length_difference = match
+    logger.info(
+        "Edges that match: %.3f mm long in %s, %.3f mm long in %s",
+        (edge_a.p1 - edge_a.p0).length,
+        input_a,
+        (edge_b.p1 - edge_b.p0).length,
+        input_b,
+    )
 
     # Step 4: move the second model onto the first one, without deforming it
-    transform, angle = alignment_transform(edge_a, edge_b, flipped, height_idx)
+    transform, _ = alignment_transform(edge_a, edge_b, flipped, height_idx)
     transform = overlap_transform(obj_a, edge_a, height_idx) @ transform
-    length_a, length_b = (edge_a.p1 - edge_a.p0).length, (edge_b.p1 - edge_b.p0).length
-    if error <= PERFECT_TOLERANCE:
+    if length_difference <= PERFECT_TOLERANCE and abs(rotation) <= PERFECT_ANGLE:
         logger.info(
-            "The edges match perfectly (length %.3f mm, ends within %.4f mm)", length_a, error
+            "The edges match perfectly (length difference %.4f mm, rotation %.4f deg)",
+            length_difference,
+            math.degrees(rotation),
         )
     else:
         logger.warning(
-            "The edges do not match perfectly: ends %.3f mm apart (rotation %.3f deg, "
-            "length %.3f mm and %.3f mm). The second model is moved to fit the first",
-            error,
-            math.degrees(angle),
-            length_a,
-            length_b,
+            "The edges do not match perfectly: the lengths differ by %.3f mm and the "
+            "second model is rotated by %.3f deg to fit the first one",
+            length_difference,
+            math.degrees(rotation),
         )
     obj_b.data.transform(transform)
 
