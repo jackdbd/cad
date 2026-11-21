@@ -87,9 +87,9 @@ Boolean solvers do not report problems: on meshes that are not clean (non-manifo
 - **Removed volume.** The volume removed from the model must match the volume of the holes (number of holes times the area of the cylinder times the hole depth), within 2% (`VOLUME_TOLERANCE` in the script). On your real bases the difference is below 0.1 mm³ for 5 holes. A bigger difference means that a hole is missing or only partly cut, or that a hole is not fully inside the model.
 - **Non-manifold edges.** Carving must not increase the number of non-manifold edges of the model.
 
-Before carving, the script also logs the state of the input mesh at `INFO`: triangles, non-manifold edges and pairs of self-intersecting triangles. These numbers are information, not warnings: many models already have a few problems and still carve well.
+Before carving, the script also logs the state of the input mesh at `INFO`: triangles and non-manifold edges. With `CARVE_LOG_LEVEL=DEBUG` it also counts the pairs of self-intersecting triangles, which takes about 2 seconds on a detailed model, so it is skipped otherwise. These numbers are information, not warnings: many models already have a few problems and still carve well.
 
-With `--solver FAST`, a failed check also triggers a **fallback**: the script starts again from the original mesh, carves with the `EXACT` solver and logs a warning. The log line `Exported ...` tells which solver produced the file. Pass `--no-fallback` to keep the `FAST` result anyway, for example to look at what `FAST` does wrong. The checks add about 3 seconds to each model (counting the self-intersections is most of it).
+With `--solver FAST`, a failed check also triggers a **fallback**: the script starts again from the original mesh, carves with the `EXACT` solver and logs a warning. The log line `Exported ...` tells which solver produced the file. Pass `--no-fallback` to keep the `FAST` result anyway, for example to look at what `FAST` does wrong. The checks add about 1.5 seconds to each detailed model.
 
 Exit codes:
 
@@ -174,7 +174,7 @@ CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corn
 What is logged:
 
 - `INFO`: the log file path, the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
-- `DEBUG`: also the bounding box of the model, the detected height axis and the position of each hole.
+- `DEBUG`: also the bounding box of the model, the detected height axis, the position of each hole and the number of self-intersecting triangle pairs of the input mesh.
 - `WARNING`: for example when `--corners` is ignored because the model is not rectangular, when a [result check](#result-checks) fails, or when the script falls back to the `EXACT` solver.
 - `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).
 

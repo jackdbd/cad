@@ -291,14 +291,19 @@ def process_base(
 
     with timed("Input mesh analysis"):
         non_manifold_before, volume_before = analyze_mesh(base.data)
-        self_intersections = count_self_intersections(base.data)
     logger.info(
-        "Input mesh: %d triangle(s), %d non-manifold edge(s), "
-        "%d self-intersecting triangle pair(s)",
+        "Input mesh: %d triangle(s), %d non-manifold edge(s)",
         len(base.data.polygons),
         non_manifold_before,
-        self_intersections,
     )
+    if logger.isEnabledFor(logging.DEBUG):
+        # Informational only, and slow (about 2 s on a detailed model): count them
+        # only when the result will be logged
+        with timed("Self-intersection count", logging.DEBUG):
+            self_intersections = count_self_intersections(base.data)
+        logger.debug(
+            "Input mesh: %d self-intersecting triangle pair(s)", self_intersections
+        )
 
     # Calculate actual world-space bounding box
     bbox_corners = [
