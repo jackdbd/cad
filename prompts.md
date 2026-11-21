@@ -74,6 +74,30 @@ In @logs/README.md, mention that the timestamp in the log filename is in UTC, an
 
 ---
 
+Every time you open a pull request, include an h2 section named "Description", where you explain what the PR does, and an h2 section named "How to test these changes", where you explain how to test the changes you made. For each command in this section, start with a brief explanation of what a command does, write the exact command in a code block so it's easy to copy and paste in a terminal, the describe the expected output.
+
+If the PR is about a bug fix, include a command that reproduces the bug before your fix, and then show that it works after your fix.
+
+If the PR is about a performance improvement, include a table with the performance numbers before and after your change, and explain how you measured them. Never rely on a single measurement, run the same command 3 times and take the average.
+
+Write about this in @CLAUDE.local.md.
+
+---
+
 Make sure each environment variable and command line argument is documented in the README.md file, and that the README.md file is up to date with the latest changes in the script.
+
+No need for a pull request for this change.
+
+---
+
+Never write the log files in `logs/`. I will do it myself. Write this to `CLAUDE.md`.
+
+---
+
+Switch on a new branch to add a new command line argument in `carve-magnet-holes.py` for the solver. This argment allows to use the FAST solver instead of the EXACT one. Add this help for that flag: "Use the FAST solver instead of the EXACT one. The FAST solver is much quicker, but it does not handle meshes that are not clean: non-manifold edges, self-intersections, coplanar faces." When testing this flag, include the solver type in the output folder, so I can easily compare the results of the two solvers. For example, if I run the script with `--solver FAST`, the output folder should be `assets/output/wood-elf-bases/25x25/FAST-solver`. If I run it with `--solver EXACT`, the output folder should be `assets/output/wood-elf-bases/25x25/EXACT-solver`. The default solver should still be EXACT.
+
+---
+
+The FAST solver seems to work well. Is there a way to notify the user when it has some issues with the mesh? For example, if the mesh is not clean (non-manifold edges, self-intersections, coplanar faces), it can silently produce broken or missing geometry. I want to be able to detect this and log a warning message. Is there a way to do this in Blender?
 
 ---

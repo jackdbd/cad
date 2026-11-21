@@ -5,7 +5,11 @@ Some Blender and OpenSCAD scripts.
 ## Table of Contents
 
 - [Development environment](#development-environment)
+  - [Environment variables](#environment-variables)
 - [Blender scripts](#blender-scripts)
+  - [carve-magnet-holes.py](#carve-magnet-holespy)
+  - [carve](#carve)
+  - [Logging](#logging)
 - [OpenSCAD scripts](#openscad-scripts)
 
 ## Development environment
@@ -28,58 +32,149 @@ This project can be managed with a combination of [devenv tasks](https://devenv.
 task-list
 ```
 
+The devenv shell also provides these scripts:
+
+| Script | Description |
+| --- | --- |
+| `carve` | Runs `carve.sh`: carves magnet sockets into every STL file in a directory (see [carve](#carve)) |
+| `task-list` | Lists the devenv tasks |
+| `versions` | Prints the versions of Claude Code, git, OpenSCAD and Python |
+| `cdoctor` | Runs `claude doctor` |
+
+### Environment variables
+
+| Variable | Default | Defined in | Used by | Description |
+| --- | --- | --- | --- | --- |
+| `CARVE_LOG_LEVEL` | `INFO` (when unset) | you | `carve-magnet-holes.py`, `carve` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (case-insensitive). An invalid value logs a warning and falls back to `INFO`. See [Logging](#logging). |
+| `NO_COLOR` | unset | you | `carve-magnet-holes.py` | When set (to any value), log output on stdout is never colored. Colors are only used when stdout is a terminal. |
+| `MAGNET_DIAMETER` | `5.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet diameter in mm, passed to the script as `--diameter`. |
+| `MAGNET_HEIGHT` | `2.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet height in mm, passed to the script as `--height`. |
+| `CLAUDE_CONFIG_DIR` | `/home/jack/.claude-zartis/` | `devenv.nix` | Claude Code | Directory where Claude Code keeps its configuration. |
+
 ## Blender scripts
 
-Show the help for the `carve-magnet-holes.py` script:
+These scripts need [Blender](https://www.blender.org/) (tested with 5.2.2) and the `blender` command on your `PATH`. The devenv shell does not provide it.
+
+### carve-magnet-holes.py
+
+Carves cylindrical magnet sockets into an STL file. Run it with Blender in background mode: everything after the `--` is passed to the script.
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `-i`, `--in` | yes | | Path to the input STL file. |
+| `-o`, `--out` | yes | | Path to the output STL file. Missing parent directories are created. |
+| `-d`, `--diameter` | no | `5.0` | Magnet diameter in mm. |
+| `-H`, `--height` | no | `2.0` | Magnet height in mm. |
+| `--center` | at least one of `--center` and `--corners` | | Carve a hole in the center of the model. |
+| `--corners` | | | Carve a hole in each of the 4 corners of a rectangular model. |
+| `--solver` | no | `EXACT` | Boolean solver: `EXACT` or `FAST` (case-insensitive). The `FAST` solver is much quicker, but it does not handle meshes that are not clean: non-manifold edges, self-intersections, coplanar faces. |
+| `--no-fallback` | no | | With `--solver FAST`, do not fall back to `EXACT` when the result looks broken (see [Result checks](#result-checks)). The warnings are still logged. |
+| `-h`, `--help` | no | | Show the help and exit. |
+
+How it works:
+
+- The hole is 0.2 mm larger than the magnet, both in diameter and in depth (`TOLERANCE` in the script): with the defaults you get a 5.2 mm wide and 2.2 mm deep hole.
+- The smallest dimension of the model is taken as its height, and the holes are cut into its bottom face.
+- `--center` carves a hole in the center of the model.
+- `--corners` carves a hole in each of the 4 corners, with each hole centered one magnet diameter from the two nearest edges (`CORNER_EDGE_DISTANCE_FACTOR` in the script). It only applies to rectangular models: if a corner of the bounding box is not filled by the model (a probe is cast 0.5 mm inside each corner, so slightly rounded corners are tolerated), the script prints a warning and ignores `--corners`.
+- Pass both flags to carve 5 holes. All the holes are cut in a single Boolean operation.
+- The Boolean operation uses the `EXACT` solver, which is robust but slow on detailed models. `--solver FAST` uses the faster solver instead. Blender 5 calls it `FLOAT`: the script uses whichever name your Blender has. Check the result of `FAST` before you trust it, especially on models that are not clean. When the result of `FAST` looks broken, the script warns and redoes the carving with `EXACT` (see [Result checks](#result-checks)).
+
+#### Result checks
+
+Boolean solvers do not report problems: on meshes that are not clean (non-manifold edges, self-intersections, coplanar faces) they can silently produce broken or missing geometry. So after carving, the script checks the result and logs a `WARNING` for each problem it finds:
+
+- **Removed volume.** The volume removed from the model must match the volume of the holes (number of holes times the area of the cylinder times the hole depth), within 2% (`VOLUME_TOLERANCE` in the script). On your real bases the difference is below 0.1 mm³ for 5 holes. A bigger difference means that a hole is missing or only partly cut, or that a hole is not fully inside the model.
+- **Non-manifold edges.** Carving must not increase the number of non-manifold edges of the model.
+
+Before carving, the script also logs the state of the input mesh at `INFO`: triangles and non-manifold edges. With `CARVE_LOG_LEVEL=DEBUG` it also counts the pairs of self-intersecting triangles, which takes about 2 seconds on a detailed model, so it is skipped otherwise. These numbers are information, not warnings: many models already have a few problems and still carve well.
+
+With `--solver FAST`, a failed check also triggers a **fallback**: the script starts again from the original mesh, carves with the `EXACT` solver and logs a warning. The log line `Exported ...` tells which solver produced the file. Pass `--no-fallback` to keep the `FAST` result anyway, for example to look at what `FAST` does wrong. The checks add about 1.5 seconds to each detailed model.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The output file was written. |
+| `1` | Nothing was carved (for example `--corners` alone on a model that is not rectangular), so no file was written. |
+| `2` | Neither `--center` nor `--corners` was passed: the script prints its help. |
+
+Blender exits with `0` even when the script fails with an unexpected error (for example a missing input file), unless you pass `--python-exit-code 1`. Pass it whenever you check the exit code.
+
+Show the help:
 
 ```sh
 blender -b -P blender/carve-magnet-holes.py -- --help
 ```
 
-Show the help for the `cad:carve-magnet-holes` task:
+Carve 5 holes into a model:
+
+```sh
+blender -b --python-exit-code 1 -P blender/carve-magnet-holes.py -- \
+    --in "assets/input/wood-elf-bases/50x75/base 1.stl" \
+    --out "assets/output/base 1_with_holes.stl" \
+    --diameter 5 --height 2 \
+    --center --corners
+```
+
+The devenv task `cad:carve-magnet-holes:help` shows the help. The task `cad:carve-magnet-holes:run` carves a center hole into `assets/input/high-elf-bases/20x20/base-2.stl`, using `MAGNET_DIAMETER` and `MAGNET_HEIGHT`, and writes `assets/output/high-elf-bases/20x20-with-holes/base-2_with_5x2_magnet.stl` (the output filename is fixed, whatever the magnet size):
 
 ```sh
 devenv tasks run cad:carve-magnet-holes:help
-```
-
-Run the `carve-magnet-holes.py` script to carve magnet sockets into an STL file. At least one of `--center` and `--corners` is required, otherwise the script prints its help and exits:
-
-- `--center` carves a hole in the center of the model.
-- `--corners` carves a hole in each of the 4 corners, with each hole centered one magnet diameter from the edges (`CORNER_EDGE_DISTANCE_FACTOR` in the script). It only applies to rectangular models: on any other shape it prints a warning and is ignored.
-- Pass both to carve 5 holes.
-
-```sh
-blender -b -P blender/carve-magnet-holes.py -- --in assets/input/base.stl --out assets/output/base_with_holes.stl --diameter 5.0 --height 2.0 --center --corners
-```
-
-```sh
-blender -b -P blender/carve-magnet-holes.py -- --in assets/input/wood-elf-bases/50x75/base.stl --out assets/output/base_with_holes.stl --diameter 5.0 --height 2.0 --center --corners
-```
-
-Run the `cad:carve-magnet-holes` task to carve a magnet socket into an STL file:
-
-```sh
 devenv tasks run cad:carve-magnet-holes:run
 ```
 
-Carve magnet sockets into every STL file found in a directory. Output goes to the matching `assets/output/...` directory, with a `_with_<diameter>x<height>_magnet` suffix on each filename. `carve` accepts `--center` (the default if no flag is given) and `--corners`. Files where no hole could be carved are skipped and listed at the end.
+### carve
+
+`carve.sh` runs `carve-magnet-holes.py` on every STL file in a directory. Inside the devenv shell it is available as the `carve` command, from any directory. Without devenv, run `./carve.sh` from the repo root.
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `-i`, `--in` | yes | | Directory with the input STL files. Only the `.stl` files directly inside it are processed (not subdirectories). Its path must contain a component named `input`. |
+| `-d`, `--diameter` | no | `5` | Magnet diameter in mm (a positive number). |
+| `-H`, `--height` | no | `2` | Magnet height in mm (a positive number). |
+| `--center` | no | used if you pass neither flag | Carve a hole in the center of each model. |
+| `--corners` | no | | Carve a hole in each corner of each rectangular model. Pass both flags for 5 holes. |
+| `--solver` | no | `EXACT` in the script | `EXACT` or `FAST`, passed to the script (see above). |
+| `--no-fallback` | no | | Passed to the script: with `--solver FAST`, do not fall back to `EXACT` when the result looks broken. |
+| `-h`, `--help` | no | | Show the help and exit. |
+
+How it works:
+
+- Output goes to the same path with the `input` component replaced by `output`, for example `assets/input/wood-elf-bases/25x25` becomes `assets/output/wood-elf-bases/25x25`. The directory is created if it does not exist.
+- Each output file keeps the name of the input file, with a `_with_<diameter>x<height>_magnet` suffix: `base 1.stl` becomes `base 1_with_5x2_magnet.stl`. Numbers are written without trailing zeros (`--diameter 6.0` gives `6`). The suffix does not say which holes were carved or which solver was used (the log file does), so running `carve` again with different flags or with the other solver overwrites the previous files.
+- Files where no hole could be carved (for example `--corners` alone on a model that is not rectangular) are skipped. They are listed at the end and `carve` exits with `1`. It also exits with `1` when the directory does not exist or has no STL files, and with `2` when the arguments are invalid.
+- Each file is processed by its own Blender process, so each one gets its own [log file](#logging).
 
 ```sh
 carve -i assets/input/wood-elf-bases/25x25 -d 5 -H 2 --center --corners
 # -> assets/output/wood-elf-bases/25x25/base 1_with_5x2_magnet.stl, ...
+```
 
-./carve.sh -i assets/input/wood-elf-bases/50x75 -d 5 -H 2 --center --corners
+Carve faster with the `FAST` solver:
+
+```sh
+carve -i assets/input/wood-elf-bases/25x25 --center --corners --solver FAST
 ```
 
 ### Logging
 
-`carve-magnet-holes.py` logs to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in `logs/`, named like `carve-magnet-holes_2026-11-21_23-58-59.log` (UTC timestamp). Each run writes its own file. The log includes the command line arguments and the input and output filenames.
+`carve-magnet-holes.py` logs to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in the `logs/` directory of the repo, named like `carve-magnet-holes_2026-11-21_23-58-59.log` (UTC timestamp of the start of the run). Log files are gitignored. Each run writes its own file, and timestamps inside the log are in UTC too. Runs that only print the help or fail on invalid arguments do not create a log file.
 
 Set the level with the `CARVE_LOG_LEVEL` environment variable (`DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`):
 
 ```sh
 CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corners
 ```
+
+What is logged:
+
+- `INFO`: the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
+- `DEBUG`: also the bounding box of the model, the detected height axis, the position of each hole and the number of self-intersecting triangle pairs of the input mesh.
+- `WARNING`: for example when `--corners` is ignored because the model is not rectangular, when a [result check](#result-checks) fails, or when the script falls back to the `EXACT` solver.
+- `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).
+
+Messages printed by Blender itself (for example `Removed N degenerate triangles during import`) only go to stdout, not to the log file.
 
 ## OpenSCAD scripts
 
