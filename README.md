@@ -81,8 +81,9 @@ How it works:
 
 - The hole is 0.2 mm larger than the magnet, both in diameter and in depth (`TOLERANCE` in the script): with the defaults you get a 5.2 mm wide and 2.2 mm deep hole.
 - The smallest dimension of the model is taken as its height, and the holes are cut into its bottom face.
-- `--center` carves a hole in the center of the model.
-- `--corners` carves a hole in each of the 4 corners, with each hole centered one magnet diameter from the two nearest edges (`CORNER_EDGE_DISTANCE_FACTOR` in the script). It only applies to rectangular models: if a corner of the bounding box is not filled by the model (a probe is cast 0.5 mm inside each corner, so slightly rounded corners are tolerated), the script prints a warning and ignores `--corners`.
+- The holes are placed on the footprint of the model, which is its flat bottom, not the whole model: a decoration that sticks out of the edge of the base (a leaf, a branch) would otherwise move the center and the corners. If the flat bottom is smaller than 40% of the model along an axis (`MIN_FOOTPRINT_RATIO` in the script), the model does not rest on a flat base: the script logs a warning and uses the whole model, as it would without this rule.
+- `--center` carves a hole in the center of the footprint.
+- `--corners` carves a hole in each of the 4 corners, with each hole centered one magnet diameter from the two nearest edges (`CORNER_EDGE_DISTANCE_FACTOR` in the script). It only applies to rectangular models: if a corner of the footprint is not filled by the model (a probe is cast 0.5 mm inside each corner, so slightly rounded corners are tolerated), the script prints a warning and ignores `--corners`.
 - Pass both flags to carve 5 holes. All the holes are cut in a single Boolean operation.
 - The Boolean operation uses the `EXACT` solver, which is robust but slow on detailed models. `--solver FAST` uses the faster solver instead. Blender 5 calls it `FLOAT`: the script uses whichever name your Blender has. Check the result of `FAST` before you trust it, especially on models that are not clean. When the result of `FAST` looks broken, the script warns and redoes the carving with `EXACT` (see [Result checks](#result-checks)).
 
@@ -249,7 +250,7 @@ CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corn
 What `carve-magnet-holes.py` logs:
 
 - `INFO`: the command line arguments, the input and output filenames, the Boolean solver, the state of the input mesh, the result of the [result checks](#result-checks), how long each phase took (`STL import`, `Input mesh analysis`, `Rectangularity check` (only with `--corners`), `Carving N hole(s)`, `Result check`, `STL export` and `Total`), and the result.
-- `DEBUG`: also the bounding box of the model, the detected height axis, the position of each hole and the number of self-intersecting triangle pairs of the input mesh.
+- `DEBUG`: also the bounding box of the model, the detected height axis, the footprint, the position of each hole and the number of self-intersecting triangle pairs of the input mesh.
 - `WARNING`: for example when `--corners` is ignored because the model is not rectangular, when a [result check](#result-checks) fails, or when the script falls back to the `EXACT` solver.
 - `ERROR`: when there is nothing to carve, or when the script fails (with the traceback).
 

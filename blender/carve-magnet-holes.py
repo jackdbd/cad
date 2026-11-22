@@ -9,10 +9,12 @@ from pathlib import Path
 import bmesh
 import bpy
 import mathutils
+import numpy as np
 from mathutils.bvhtree import BVHTree
 
 # Blender does not add the directory of a script to the import path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import base_geometry as geometry  # noqa: E402
 import cad_common as common  # noqa: E402
 
 TOLERANCE = 0.2  # Clearance tolerance applied to both diameter and depth (in mm)
@@ -28,6 +30,10 @@ CORNER_EDGE_DISTANCE_FACTOR = 1.0
 # How far inside each bounding-box corner the rectangularity probe is cast: small
 # corner rounding is tolerated, as the corner holes still fit inside it
 CORNER_PROBE_INSET = 0.5  # mm
+# The flat bottom of a model is only the footprint of a base if it is at least this
+# fraction of the model, along each axis of the base. If it is smaller, the model does not
+# rest on a flat base (for example it is tilted) and the whole model is used instead.
+MIN_FOOTPRINT_RATIO = 0.4
 CUTTER_VERTICES = 64  # Vertices of each cylinder subtracted from the base
 # Allowed difference between the removed and the expected volume, as a fraction of the
 # expected one. Measured on real bases the difference is about 0.2%.
@@ -37,6 +43,35 @@ LOG_LEVEL_ENV_VAR = "CARVE_LOG_LEVEL"
 
 logger = logging.getLogger(Path(__file__).stem)
 timed = partial(common.timed, logger)
+
+
+def find_footprint(base, height_idx, mins, maxs):
+    """Return the bounding box of the footprint of base: its minimum and its maximum.
+
+    The footprint is the flat bottom of the model, not the whole model: a decoration that
+    sticks out of the edge of the base makes the bounding box of the whole model larger
+    than the base, and the corners of the base are not the corners of that box.
+    """
+    world = np.array(base.matrix_world)
+    coords = geometry.vertex_coordinates(base) @ world[:3, :3].T + world[:3, 3]
+    on_bottom = coords[
+        np.abs(coords[:, height_idx] - mins[height_idx]) <= geometry.BOTTOM_PLANE_TOLERANCE
+    ]
+    foot_min, foot_max = on_bottom.min(axis=0), on_bottom.max(axis=0)
+
+    plane_idx = [i for i in range(3) if i != height_idx]
+    if any(
+        foot_max[i] - foot_min[i] < MIN_FOOTPRINT_RATIO * (maxs[i] - mins[i])
+        for i in plane_idx
+    ):
+        logger.warning(
+            "The flat bottom of the model (%s mm) is much smaller than the model (%s mm): "
+            "the model may not rest on a flat base, so the whole model is used",
+            " x ".join("%.1f" % (foot_max[i] - foot_min[i]) for i in plane_idx),
+            " x ".join("%.1f" % (maxs[i] - mins[i]) for i in plane_idx),
+        )
+        return np.array(mins), np.array(maxs)
+    return foot_min, foot_max
 
 
 def is_rectangular(base, height_idx, mins, maxs):
@@ -209,7 +244,6 @@ def process_base(
 
     mins = [min(v[i] for v in bbox_corners) for i in range(3)]
     maxs = [max(v[i] for v in bbox_corners) for i in range(3)]
-    centers = [(lo + hi) / 2.0 for lo, hi in zip(mins, maxs)]
     logger.debug(
         "Bounding box: min=%s max=%s",
         [round(v, 3) for v in mins],
@@ -220,6 +254,14 @@ def process_base(
     height_idx = min(range(3), key=lambda i: maxs[i] - mins[i])
     plane_idx = [i for i in range(3) if i != height_idx]
     logger.debug("Detected height axis: %s", "XYZ"[height_idx])
+
+    foot_min, foot_max = find_footprint(base, height_idx, mins, maxs)
+    centers = (foot_min + foot_max) / 2.0
+    logger.debug(
+        "Footprint: min=%s max=%s",
+        [round(float(v), 3) for v in foot_min],
+        [round(float(v), 3) for v in foot_max],
+    )
 
     # Calculate hole dimensions including tolerance
     hole_diameter = magnet_diameter + TOLERANCE
@@ -246,11 +288,11 @@ def process_base(
 
     if corners:
         with timed("Rectangularity check"):
-            rectangular = is_rectangular(base, height_idx, mins, maxs)
+            rectangular = is_rectangular(base, height_idx, foot_min, foot_max)
         if rectangular:
             inset = magnet_diameter * CORNER_EDGE_DISTANCE_FACTOR
-            for a in (mins[plane_idx[0]] + inset, maxs[plane_idx[0]] - inset):
-                for b in (mins[plane_idx[1]] + inset, maxs[plane_idx[1]] - inset):
+            for a in (foot_min[plane_idx[0]] + inset, foot_max[plane_idx[0]] - inset):
+                for b in (foot_min[plane_idx[1]] + inset, foot_max[plane_idx[1]] - inset):
                     positions.append(location(a, b))
         else:
             logger.warning("--corners ignored: the model is not rectangular")
