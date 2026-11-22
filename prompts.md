@@ -101,3 +101,23 @@ Switch on a new branch to add a new command line argument in `carve-magnet-holes
 The FAST solver seems to work well. Is there a way to notify the user when it has some issues with the mesh? For example, if the mesh is not clean (non-manifold edges, self-intersections, coplanar faces), it can silently produce broken or missing geometry. I want to be able to detect this and log a warning message. Is there a way to do this in Blender?
 
 ---
+
+I have 2 STL files that have an edge that matches. I want to merge them on that edge. Can I do this in Blender?
+
+---
+
+On a new branch, implement a new Python script for Blender called `merge-on-edge.py`. This script should take 2 STL files as input, and merge them on the edge that matches. If there are multiple algorithms to choose from for selecting which edges match, please ask me in this session. The output of this script should be a new STL file. The script should be able to handle cases where the edge is not perfectly aligned, and should merge the meshes in a way that preserves the geometry of both meshes. The script should also log the input and output filenames, and any warnings or errors that occur during the merging process. For example, if either one of the two files have no edges that would allow merging (e.g. circle, oval), or if none of the edges have at least a coarse match, the script should log an error and exit. If two edges match, but not perfectly, the script should log a warning and proceed with the output. If the two edge perfectly match, the script should log an INFO level log.
+
+---
+
+I put two files in @assets/input/merge-on-edge-test. I saw that those two models match on an edge. Validate `merge-on-edge.py` on those files.
+
+---
+
+If `carve-magnet-holes.py` and `merge-on-edge.py` share some code, put it in a module. Also, tell me if there is a standard way to do it with Blender scripts.
+
+---
+
+Are there any bases from `assets/input/wood-elf-bases/50x100` that could be merged with a base from `assets/input/wood-elf-bases/50x100`? Is there a relatively fast way to check this, maybe without having to merge any edges, like some sort of "dry run"? Consider that the bases I put in `in assets/input/merge-on-edge-test` are `assets/input/wood-elf-bases/50x100/base 3.stl` and `assets/input/wood-elf-bases/100x100/base 2.stl`.
+
+---
