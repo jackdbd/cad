@@ -277,9 +277,9 @@ def process_base(
 
     def location(a, b):
         loc = [0.0, 0.0, 0.0]
-        loc[plane_idx[0]] = a
-        loc[plane_idx[1]] = b
-        loc[height_idx] = height_pos
+        loc[plane_idx[0]] = float(a)
+        loc[plane_idx[1]] = float(b)
+        loc[height_idx] = float(height_pos)
         return tuple(loc)
 
     positions = []
