@@ -121,3 +121,95 @@ If `carve-magnet-holes.py` and `merge-on-edge.py` share some code, put it in a m
 Are there any bases from `assets/input/wood-elf-bases/50x100` that could be merged with a base from `assets/input/wood-elf-bases/50x100`? Is there a relatively fast way to check this, maybe without having to merge any edges, like some sort of "dry run"? Consider that the bases I put in `in assets/input/merge-on-edge-test` are `assets/input/wood-elf-bases/50x100/base 3.stl` and `assets/input/wood-elf-bases/100x100/base 2.stl`.
 
 ---
+
+## 26/11/2026
+
+I have this STL file `assets/input/magical-vortexes/phantasmagoria-vortex-spell.stl` that I want to hollow using a Blender script. I want the following parameters to be configurable.
+
+<script-parameters>
+WALL_THICKNESS = 2.2      # Spessore parete (2.0 - 2.5 mm consigliato)
+VOXEL_SIZE = 0.4          # Precisione cavita' interna (piu' basso = piu' preciso)
+ADD_DRAIN_HOLES = True    # True per creare 2 fori di drenaggio sul fondo
+HOLE_RADIUS = 2.5         # Raggio foro (2.5 mm = diametro 5 mm)
+</script-parameters>
+
+The Blender script should work with other STL files too (but for now focus on making the script work well for this specific STL file). I found this script but never tried it out. Maybe you can use it as a starting point, I'm not sure. Don't mind the Italian, this new script must be in English.
+
+<existing-blender-script>
+import bpy
+
+# --- PARAMETRI CONFIGURABILI (in mm se la scena e' in mm) ---
+WALL_THICKNESS = 2.2      # Spessore parete (2.0 - 2.5 mm consigliato)
+VOXEL_SIZE = 0.4          # Precisione cavita' interna (piu' basso = piu' preciso)
+ADD_DRAIN_HOLES = True    # True per creare 2 fori di drenaggio sul fondo
+HOLE_RADIUS = 2.5         # Raggio foro (2.5 mm = diametro 5 mm)
+# ------------------------------------------------------------
+
+obj = bpy.context.active_object
+if obj is None or obj.type != 'MESH':
+    raise Exception("Seleziona prima la mesh del modello!")
+
+# 1. Duplica il modello per creare il nucleo interno
+bpy.ops.object.duplicate()
+inner = bpy.context.active_object
+inner.name = "Inner_Cavity"
+
+# 2. Voxel Remesh per eliminare tutti i sottosquadri dei teschi interni
+inner.data.remesh_voxel_size = VOXEL_SIZE
+bpy.ops.object.voxel_remesh()
+
+# 3. Rimpicciolisce il nucleo verso l'interno dello spessore parete (Displace negativo)
+disp = inner.modifiers.new(name="Shrink", type='DISPLACE')
+disp.strength = -WALL_THICKNESS
+disp.mid_level = 0.0
+bpy.ops.object.modifier_apply(modifier=disp.name)
+
+# 4. Smooth leggero per evitare spigoli interni (resin traps)
+smooth = inner.modifiers.new(name="Smooth", type='SMOOTH')
+smooth.factor = 0.5
+smooth.iterations = 5
+bpy.ops.object.modifier_apply(modifier=smooth.name)
+
+# 5. Sottrae il nucleo interno dal modello originale (Boolean Difference)
+bool_mod = obj.modifiers.new(name="Hollow_Bool", type='BOOLEAN')
+bool_mod.operation = 'DIFFERENCE'
+bool_mod.solver = 'EXACT'
+bool_mod.object = inner
+bpy.context.view_layer.objects.active = obj
+bpy.ops.object.modifier_apply(modifier=bool_mod.name)
+
+# Elimina l'oggetto temporaneo del nucleo
+bpy.data.objects.remove(inner, do_unlink=True)
+
+# 6. Crea 2 fori di drenaggio sul fondo (asse Z minimo)
+if ADD_DRAIN_HOLES:
+    bbox = [obj.matrix_world @ v.co for v in obj.data.vertices]
+    min_z = min(v.z for v in bbox)
+    center_x = sum(v.x for v in bbox) / len(bbox)
+    center_y = sum(v.y for v in bbox) / len(bbox)
+
+    for i, offset in enumerate([-HOLE_RADIUS * 2.2, HOLE_RADIUS * 2.2]):
+        bpy.ops.mesh.primitive_cylinder_add(
+            vertices=32,
+            radius=HOLE_RADIUS,
+            depth=WALL_THICKNESS * 6,
+            location=(center_x + offset, center_y, min_z + WALL_THICKNESS)
+        )
+        cyl = bpy.context.active_object
+        hole_bool = obj.modifiers.new(name=f"Hole_{i}", type='BOOLEAN')
+        hole_bool.operation = 'DIFFERENCE'
+        hole_bool.solver = 'EXACT'
+        hole_bool.object = cyl
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.modifier_apply(modifier=hole_bool.name)
+        bpy.data.objects.remove(cyl, do_unlink=True)
+
+print("Hollowing completato con successo!")
+```
+</existing-blender-script>
+
+I would like the generated file to be put in the `assets/output` directory, "inheriting" the same relative filepath as the input file, so for example `assets/input/magical-vortexes/phantasmagoria-vortex-spell.stl` should end up in `assets/output/magical-vortexes/phantasmagoria-vortex-spell-hollowed.stl`.
+
+---
+
+The Blender script works well. Could I have achieved the same result using an OpenSCAD script?
