@@ -11,6 +11,7 @@ Some Blender and OpenSCAD scripts.
   - [carve](#carve)
   - [merge-on-edge.py](#merge-on-edgepy)
   - [preview-pairs.py](#preview-pairspy)
+  - [hollow-model.py](#hollow-modelpy)
   - [Logging](#logging)
 - [OpenSCAD scripts](#openscad-scripts)
 
@@ -50,7 +51,8 @@ The devenv shell also provides these scripts:
 | `CARVE_LOG_LEVEL` | `INFO` (when unset) | you | `carve-magnet-holes.py`, `carve` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (case-insensitive). An invalid value logs a warning and falls back to `INFO`. See [Logging](#logging). |
 | `MERGE_LOG_LEVEL` | `INFO` (when unset) | you | `merge-on-edge.py` | Log level of `merge-on-edge.py`, with the same values as `CARVE_LOG_LEVEL`. |
 | `PREVIEW_LOG_LEVEL` | `INFO` (when unset) | you | `preview-pairs.py` | Log level of `preview-pairs.py`, with the same values as `CARVE_LOG_LEVEL`. |
-| `NO_COLOR` | unset | you | `carve-magnet-holes.py`, `merge-on-edge.py`, `preview-pairs.py` | When set (to any value), log output on stdout is never colored. Colors are only used when stdout is a terminal. |
+| `HOLLOW_LOG_LEVEL` | `INFO` (when unset) | you | `hollow-model.py` | Log level of `hollow-model.py`, with the same values as `CARVE_LOG_LEVEL`. |
+| `NO_COLOR` | unset | you | `carve-magnet-holes.py`, `merge-on-edge.py`, `preview-pairs.py`, `hollow-model.py` | When set (to any value), log output on stdout is never colored. Colors are only used when stdout is a terminal. |
 | `MAGNET_DIAMETER` | `5.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet diameter in mm, passed to the script as `--diameter`. |
 | `MAGNET_HEIGHT` | `2.0` | `devenv.nix` | `cad:carve-magnet-holes:run` task | Magnet height in mm, passed to the script as `--height`. |
 | `CLAUDE_CONFIG_DIR` | `/home/jack/.claude-zartis/` | `devenv.nix` | Claude Code | Directory where Claude Code keeps its configuration. |
@@ -237,11 +239,57 @@ Notes:
 - Exit codes: `0` when the pictures are written, `1` when a directory does not exist or has no STL files, and `2` when the arguments are invalid.
 - Like the other scripts, it writes a [log file](#logging).
 
+### hollow-model.py
+
+Hollows a model to save resin: it keeps a wall of constant thickness all around a cavity, and cuts two drain holes in the bottom so that the resin can get out.
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `-i`, `--in` | yes | | Path to the input STL file. |
+| `-o`, `--out` | no | the same path in `output`, with `-hollowed` added to the name | Path to the output STL file. By default the first directory named `input` becomes `output`: `assets/input/magical-vortexes/vortex.stl` gives `assets/output/magical-vortexes/vortex-hollowed.stl`. Without an `input` directory in the path, `--out` is required. |
+| `-w`, `--wall-thickness` | no | `2.2` | Thickness of the wall in mm (2.0 to 2.5 mm is recommended). |
+| `-v`, `--voxel-size` | no | `0.4` | Size of the voxels used to compute the cavity in mm: the smaller, the more precise the walls, and the slower. |
+| `--no-drain-holes` | no | | Do not cut the drain holes. |
+| `-r`, `--hole-radius` | no | `2.5` | Radius of the drain holes in mm (2.5 mm is a diameter of 5 mm). |
+| `--merge-pieces` | no | | Merge the pieces of the model into a single solid before hollowing it, for a model made of overlapping pieces. The outer surface is replaced by a voxel remesh of the union of the pieces. |
+| `--merge-voxel-size` | no | `0.2` | Size of the voxels used to merge the pieces in mm. The merged surface stays on the original one, within one voxel. |
+| `-h`, `--help` | no | | Show the help and exit. |
+
+How it works:
+
+1. **Merge (optional, `--merge-pieces`).** A model made of overlapping pieces has surfaces inside the material, and the cavity cannot be computed from it. A voxel remesh keeps only the outer surface of the union of the pieces, and replaces the model with it. The specks of one voxel that the remesh leaves are removed, and the script logs how far the merged surface is from the original one.
+2. **Cavity.** The surface of the model is moved inwards by the wall thickness, in a grid of signed distances of the size of the voxels (the geometry nodes `Mesh to SDF Grid`, `SDF Grid Offset` and `Grid to Mesh` of Blender). A part of the model that is thinner than twice the wall stays solid, instead of turning inside out like with a simple displacement of the surface. If there is no cavity at all, the script logs an error and exits.
+3. **Shell.** The outer surface of the model is not touched: the surface of the cavity, turned inside out, is joined to it.
+4. **Drain holes.** Each pocket of the cavity (a separate part of it) gets two holes in its lowest part along the Z axis, its floor. The holes are on each side of the center of the floor, along the X axis, with their centers at 2.2 times the radius from the center. If the pocket is not above one of those places (the floor is a ring, for example), the hole moves to the closest point of the floor. Each hole is cut with a Boolean operation through the wall under it, into the cavity. A pocket that is too small for a hole is filled, and so is a speck of the cavity.
+5. **Checks.** The script logs the thickness of the wall (the distance from the surface of the cavity to the outer surface): the median, the 1st percentile and the thinnest. The voxels cannot resolve the narrowest crevices of a model, so a few spots can be thinner than wanted: a warning tells how many points are thinner than half of the wanted thickness, and where the thinnest one is. If more than 2% of the points are that thin, the cavity breaks through the wall: the script logs an error and exits (see the notes below, and `--merge-pieces`). Then the script checks that the bounding box is the one of the original model, that the volume is the one of the model minus the cavity and the holes (within 1%), and that each hole goes through the bottom wall. If one of these checks fails, it logs an error and exits without writing the file.
+
+On `magical-vortexes/phantasmagoria-vortex-spell.stl` (83 x 84 x 126 mm, 536,528 triangles), with the default options, the volume goes from 383,103 mm3 to 86,264 mm3 (77% less), and the script takes 26 seconds (9 for the cavity and 9 for the drain holes). The median wall is 2.17 mm. The thinnest wall is 0.40 mm, near a narrow crevice, and 0.13% of the points of the cavity are less than 1.1 mm from the surface. The hollowed model has the same 12 non-manifold edges and the same 82 self-intersecting triangle pairs as the original, and it is one piece.
+
+```sh
+blender -b --python-exit-code 1 -P blender/hollow-model.py -- \
+    --in assets/input/magical-vortexes/phantasmagoria-vortex-spell.stl \
+    --wall-thickness 2.2 \
+    --voxel-size 0.4 \
+    --hole-radius 2.5
+```
+
+Exit codes: `0` when the hollowed model is written, `1` when the script logged an error (nothing is written in that case), and `2` when the arguments are invalid. As with the other scripts, pass `--python-exit-code 1` to Blender if you check the exit code.
+
+Notes:
+
+- The model must be a closed solid, standing on its bottom: the bottom is the lowest part along the Z axis.
+- A model made of several overlapping pieces needs `--merge-pieces`: it has surfaces inside the material, and the cavity breaks through the wall. Without the option the script logs the number of pieces of the model, and exits with an error. `tempest-vortex-spell.stl` is one of those (8 pieces, 62,725 self-intersecting triangle pairs, against 1 piece and 82 pairs for the other vortex): without the option 36.6% of the points of its cavity were less than 1.1 mm from the surface. With `--merge-pieces` the merged surface is at most 0.16 mm from the original one, the median wall is 2.18 mm, 0.09% of the points of the cavity are thinner than 1.1 mm, and the merged model is 145,099 mm3 (the sum of the volumes of the pieces, 160,359 mm3, counts the overlaps twice), the hollowed model is 53,142 mm3, and the whole run takes 54 seconds.
+- `--merge-pieces` is not free: it replaces the surface with a regular mesh of the size of the voxels. On the other vortex (one piece) it gives 1.8 million triangles and a 175 MB file, against 0.8 million and 54 MB without it, and takes 76 seconds instead of 31. It also closes the narrowest crevices, so the thinnest wall goes from 0.40 mm to 1.04 mm. Use it only for a model that needs it.
+- Each pocket of the cavity gets its own drain holes, so no pocket traps resin. The script checks that each hole goes through the wall into the cavity.
+- A smaller voxel size makes the walls more precise, and it is much slower: at 0.2 mm the cavity of the vortex took 66 seconds instead of 12, and the share of points thinner than 1.5 mm went from 0.52% to 0.24%.
+- The devenv task `cad:hollow-model` runs the script with `--help`: `devenv tasks run cad:hollow-model`.
+- Like the other scripts, it writes a [log file](#logging).
+
 ### Logging
 
-`carve-magnet-holes.py`, `merge-on-edge.py` and `preview-pairs.py` log to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in the `logs/` directory of the repo, named like `carve-magnet-holes_2026-11-21_23-58-59.log` or `merge-on-edge_2026-11-21_23-58-59.log` (the script name and the UTC timestamp of the start of the run). Log files are gitignored. Each run writes its own file, and timestamps inside the log are in UTC too. Runs that only print the help or fail on invalid arguments do not create a log file.
+`carve-magnet-holes.py`, `merge-on-edge.py`, `preview-pairs.py` and `hollow-model.py` log to stdout (colored when writing to a terminal, disable with `NO_COLOR=1`) and to a file in the `logs/` directory of the repo, named like `carve-magnet-holes_2026-11-21_23-58-59.log` or `merge-on-edge_2026-11-21_23-58-59.log` (the script name and the UTC timestamp of the start of the run). Log files are gitignored. Each run writes its own file, and timestamps inside the log are in UTC too. Runs that only print the help or fail on invalid arguments do not create a log file.
 
-Set the level with the `CARVE_LOG_LEVEL` environment variable (`MERGE_LOG_LEVEL` for `merge-on-edge.py`, `PREVIEW_LOG_LEVEL` for `preview-pairs.py`): `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`:
+Set the level with the `CARVE_LOG_LEVEL` environment variable (`MERGE_LOG_LEVEL` for `merge-on-edge.py`, `PREVIEW_LOG_LEVEL` for `preview-pairs.py`, `HOLLOW_LOG_LEVEL` for `hollow-model.py`): `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`:
 
 ```sh
 CARVE_LOG_LEVEL=DEBUG carve -i assets/input/wood-elf-bases/25x25 --center --corners

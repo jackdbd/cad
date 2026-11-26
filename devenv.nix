@@ -62,5 +62,13 @@
         --center
       '';
     };
+    "cad:hollow-model" = {
+      exec = ''
+        blender -b -P blender/hollow-model.py -- \
+        --in assets/input/magical-vortexes/phantasmagoria-vortex-spell.stl \
+        --hole-radius 2.5 \
+        --wall-thickness 2.2
+      '';
+    };
   };
 }
