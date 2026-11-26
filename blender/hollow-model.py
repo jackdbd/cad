@@ -21,6 +21,12 @@ DEFAULT_WALL_THICKNESS = 2.2  # mm (2.0 to 2.5 mm is recommended)
 # Size of the voxels used to compute the cavity: the smaller, the more precise (and slower)
 DEFAULT_VOXEL_SIZE = 0.4  # mm
 DEFAULT_HOLE_RADIUS = 2.5  # mm (a radius of 2.5 mm is a diameter of 5 mm)
+# Size of the voxels used to merge the pieces of a model (--merge-pieces). The merged surface
+# is on the original one, within one voxel.
+DEFAULT_MERGE_VOXEL_SIZE = 0.2  # mm
+# A piece of the merged model, or a pocket of the cavity, that is smaller than this number of
+# voxels in every direction is a speck left by a voxel grid: it is removed
+SPECK_SIZE_VOXELS = 5
 # Width of the band of voxels around the surface, in the grid used to compute the cavity.
 # A larger band gives the same cavity, but takes longer.
 SDF_BAND_WIDTH = 3  # voxels
@@ -160,17 +166,49 @@ def drain_hole_positions(cavity_coords, cavity_tree, floor_z, hole_radius, voxel
     return positions
 
 
-def cut_drain_holes(shell, positions, bottom_z, floor_z, hole_radius):
-    """Cut a hole through the bottom wall of the shell, at each position, into the cavity."""
-    low = bottom_z - HOLE_OVERSHOOT
-    high = floor_z + HOLE_DEPTH_INTO_CAVITY
+def plan_drain_holes(cavity, outer_tree, hole_radius, voxel_size):
+    """Return the drain holes: two for each pocket of the cavity.
+
+    A hole is a dict: its position x and y, the height of the floor of the cavity above it, and
+    the height of the outer surface under it (the bottom of the wall that the hole goes through).
+    """
+    cavity_tree = mesh_tree(cavity)
+    coords = geometry.vertex_coordinates(cavity)
+    holes = []
+    for pocket in piece_vertices(cavity.data):
+        pocket_coords = coords[pocket]
+        floor_z = float(pocket_coords[:, 2].min())
+        for x, y in drain_hole_positions(
+            pocket_coords, cavity_tree, floor_z, hole_radius, voxel_size
+        ):
+            number = len(holes) + 1
+            if not point_in_mesh(cavity_tree, (x, y, floor_z + 1.0)):
+                fail(
+                    "Drain hole %d, at (%.1f, %.1f), does not reach the cavity: use "
+                    "--no-drain-holes, or a smaller --hole-radius",
+                    number,
+                    x,
+                    y,
+                )
+            below = mathutils.Vector((x, y, floor_z + 0.5))
+            hit = outer_tree.ray_cast(below, mathutils.Vector((0.0, 0.0, -1.0)))
+            if hit[0] is None:
+                fail("Drain hole %d, at (%.1f, %.1f), has no wall under it", number, x, y)
+            holes.append({"x": x, "y": y, "floor_z": floor_z, "wall_bottom": float(hit[0].z)})
+    return holes
+
+
+def cut_drain_holes(shell, holes, hole_radius):
+    """Cut each hole through the bottom wall of the shell, into the cavity."""
     cutters = []
-    for x, y in positions:
+    for hole in holes:
+        low = hole["wall_bottom"] - HOLE_OVERSHOOT
+        high = hole["floor_z"] + HOLE_DEPTH_INTO_CAVITY
         bpy.ops.mesh.primitive_cylinder_add(
             radius=hole_radius,
             depth=high - low,
             vertices=CUTTER_VERTICES,
-            location=(x, y, (low + high) / 2),
+            location=(hole["x"], hole["y"], (low + high) / 2),
         )
         cutters.append(bpy.context.active_object)
     if len(cutters) > 1:
@@ -191,28 +229,79 @@ def cut_drain_holes(shell, positions, bottom_z, floor_z, hole_radius):
     bpy.data.objects.remove(cutter, do_unlink=True)
 
 
-def count_pieces(mesh):
-    """Return the number of separate pieces of a mesh (sets of connected faces)."""
+def piece_vertices(mesh):
+    """Return the separate pieces of a mesh: for each one, the indices of its vertices."""
     bm = bmesh.new()
     bm.from_mesh(mesh)
     bm.verts.ensure_lookup_table()
     seen = set()
-    pieces = 0
+    pieces = []
     for vert in bm.verts:
         if vert.index in seen:
             continue
-        pieces += 1
         seen.add(vert.index)
         stack = [vert]
+        indices = []
         while stack:
             current = stack.pop()
+            indices.append(current.index)
             for edge in current.link_edges:
                 other = edge.other_vert(current)
                 if other.index not in seen:
                     seen.add(other.index)
                     stack.append(other)
+        pieces.append(np.array(indices))
     bm.free()
     return pieces
+
+
+def delete_small_pieces(obj, is_small):
+    """Delete the pieces of obj whose size (along X, Y and Z) satisfies is_small.
+
+    Return the number of pieces deleted.
+    """
+    coords = geometry.vertex_coordinates(obj)
+    small = [p for p in piece_vertices(obj.data) if is_small(np.ptp(coords[p], axis=0))]
+    if small:
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bmesh.ops.delete(
+            bm, geom=[bm.verts[i] for piece in small for i in piece], context="VERTS"
+        )
+        bm.to_mesh(obj.data)
+        bm.free()
+    return len(small)
+
+
+def merge_pieces(obj, voxel_size):
+    """Return a copy of obj where the pieces are merged into a single outer surface.
+
+    A model made of overlapping pieces has surfaces inside the material: the cavity cannot be
+    computed from it. A voxel remesh keeps only the outer surface of the union of the pieces.
+    """
+    merged = obj.copy()
+    merged.data = obj.data.copy()
+    bpy.context.collection.objects.link(merged)
+    merged.data.remesh_voxel_size = voxel_size
+    merged.data.remesh_voxel_adaptivity = 0.0
+    bpy.context.view_layer.objects.active = merged
+    bpy.ops.object.voxel_remesh()
+    return merged
+
+
+def log_distance_to_surface(tree, coords, label):
+    """Log how far a sample of the points is from the surface of tree."""
+    rng = np.random.default_rng(0)
+    sample = coords[rng.choice(len(coords), min(len(coords), 50000), replace=False)]
+    distances = np.array([tree.find_nearest(mathutils.Vector(p))[3] for p in sample])
+    logger.info(
+        "%s: median %.3f mm, 99th percentile %.3f mm, farthest %.3f mm",
+        label,
+        np.median(distances),
+        np.percentile(distances, 99),
+        distances.max(),
+    )
 
 
 def check_wall_thickness(outer_tree, cavity_coords, wall_thickness):
@@ -248,6 +337,24 @@ def check_wall_thickness(outer_tree, cavity_coords, wall_thickness):
     return float(thin.mean())
 
 
+def describe_input(obj, label):
+    """Log the size of obj. Return its non-manifold edges, its volume and its pieces."""
+    with timed(f"{label} analysis"):
+        non_manifold, volume = common.analyze_mesh(obj.data)
+        pieces = len(piece_vertices(obj.data))
+    coords = geometry.vertex_coordinates(obj)
+    logger.info(
+        "%s: %d triangle(s), %d non-manifold edge(s), %d piece(s), size %s mm, volume %.0f mm3",
+        label,
+        len(obj.data.polygons),
+        non_manifold,
+        pieces,
+        " x ".join("%.1f" % v for v in np.ptp(coords, axis=0)),
+        volume,
+    )
+    return non_manifold, volume, pieces
+
+
 def process_model(
     input_stl,
     output_stl,
@@ -255,9 +362,11 @@ def process_model(
     voxel_size=DEFAULT_VOXEL_SIZE,
     drain_holes=True,
     hole_radius=DEFAULT_HOLE_RADIUS,
+    merge=False,
+    merge_voxel_size=DEFAULT_MERGE_VOXEL_SIZE,
 ):
-    if wall_thickness <= 0 or voxel_size <= 0 or hole_radius <= 0:
-        fail("The wall thickness, the voxel size and the hole radius must be positive")
+    if wall_thickness <= 0 or voxel_size <= 0 or hole_radius <= 0 or merge_voxel_size <= 0:
+        fail("The wall thickness, the voxel sizes and the hole radius must be positive")
     if voxel_size > wall_thickness / 2:
         logger.warning(
             "The voxel size (%.2f mm) is more than half of the wall thickness (%.2f mm): "
@@ -269,31 +378,51 @@ def process_model(
     common.reset_scene()
     with timed("STL import"):
         outer = common.import_stl(input_stl)
-    outer_coords = geometry.vertex_coordinates(outer)
-    bottom_z = float(outer_coords[:, 2].min())
-    outer_min, outer_max = outer_coords.min(axis=0), outer_coords.max(axis=0)
-    with timed("Input mesh analysis"):
-        non_manifold_before, volume_before = common.analyze_mesh(outer.data)
-        pieces = count_pieces(outer.data)
-    logger.info(
-        "Input mesh: %d triangle(s), %d non-manifold edge(s), %d piece(s), size %s mm, "
-        "volume %.0f mm3",
-        len(outer.data.polygons),
-        non_manifold_before,
-        pieces,
-        " x ".join("%.1f" % v for v in outer_max - outer_min),
-        volume_before,
-    )
-    if pieces > 1:
+    non_manifold_before, volume_before, pieces = describe_input(outer, "Input mesh")
+    if pieces > 1 and not merge:
         logger.warning(
             "The model is made of %d separate pieces: if they overlap, the cavity cannot be "
-            "computed reliably",
+            "computed reliably (see --merge-pieces)",
             pieces,
         )
+
+    if merge:
+        # Replace the model by its outer surface: a surface inside the material would end up
+        # in the wall, or in the cavity
+        original_tree = mesh_tree(outer)
+        with timed("Merge of the pieces"):
+            merged = merge_pieces(outer, merge_voxel_size)
+            specks = delete_small_pieces(
+                merged, lambda size: size.max() < SPECK_SIZE_VOXELS * merge_voxel_size
+            )
+        bpy.data.objects.remove(outer, do_unlink=True)
+        outer = merged
+        if specks:
+            logger.info("Removed %d speck(s) left by the voxel grid", specks)
+        log_distance_to_surface(
+            original_tree,
+            geometry.vertex_coordinates(outer),
+            "Distance of the merged surface to the original one",
+        )
+        non_manifold_before, volume_before, pieces = describe_input(outer, "Merged mesh")
+        if pieces > 1:
+            logger.warning("The merged model still has %d separate pieces", pieces)
+
+    outer_coords = geometry.vertex_coordinates(outer)
+    outer_min, outer_max = outer_coords.min(axis=0), outer_coords.max(axis=0)
+    outer_tree = mesh_tree(outer)
 
     # The cavity: the surface of the model moved inwards by the thickness of the wall
     with timed("Cavity"):
         cavity = offset_surface(outer, voxel_size, -wall_thickness)
+        # A pocket that is too small for a drain hole is filled, and so is a speck
+        specks = delete_small_pieces(
+            cavity,
+            lambda size: size.max() < SPECK_SIZE_VOXELS * voxel_size
+            or (drain_holes and min(size[0], size[1]) < 2 * hole_radius),
+        )
+    if specks:
+        logger.info("Filled %d small pocket(s) of the cavity", specks)
     if not cavity.data.polygons:
         fail(
             "The model has no cavity: it is nowhere more than %.2f mm from its surface",
@@ -301,7 +430,6 @@ def process_model(
         )
     cavity_non_manifold, cavity_volume = common.analyze_mesh(cavity.data)
     cavity_coords = geometry.vertex_coordinates(cavity)
-    floor_z = float(cavity_coords[:, 2].min())
     logger.info(
         "Cavity: %d triangle(s), %.0f mm3 (%.0f%% of the model)",
         len(cavity.data.polygons),
@@ -310,35 +438,28 @@ def process_model(
     )
 
     with timed("Wall thickness check"):
-        thin_share = check_wall_thickness(mesh_tree(outer), cavity_coords, wall_thickness)
+        thin_share = check_wall_thickness(outer_tree, cavity_coords, wall_thickness)
     if thin_share > MAX_THIN_SHARE:
         fail(
             "%.1f%% of the points of the cavity are less than %.2f mm from the outer surface "
             "(the limit is %.0f%%): the cavity breaks through the wall. The model is probably "
-            "not a single closed solid (it has %d piece(s) and %d non-manifold edge(s)): "
-            "merge its pieces first",
+            "not a single closed solid (it has %d piece(s) and %d non-manifold edge(s)): %s",
             100 * thin_share,
             MIN_WALL_RATIO * wall_thickness,
             100 * MAX_THIN_SHARE,
             pieces,
             non_manifold_before,
+            "it cannot be hollowed" if merge else "merge its pieces first, with --merge-pieces",
         )
 
-    positions = []
+    holes = []
     if drain_holes:
-        cavity_tree = mesh_tree(cavity)
-        positions = drain_hole_positions(
-            cavity_coords, cavity_tree, floor_z, hole_radius, voxel_size
+        holes = plan_drain_holes(cavity, outer_tree, hole_radius, voxel_size)
+        logger.info(
+            "Drain holes: %d, in %d pocket(s) of the cavity",
+            len(holes),
+            len(holes) // 2,
         )
-        for number, (x, y) in enumerate(positions, start=1):
-            if not point_in_mesh(cavity_tree, (x, y, floor_z + 1.0)):
-                fail(
-                    "Drain hole %d, at (%.1f, %.1f), does not reach the cavity: use "
-                    "--no-drain-holes, or a smaller --hole-radius",
-                    number,
-                    x,
-                    y,
-                )
 
     # The shell: the model, and the cavity with its faces turned inside out
     bm = bmesh.new()
@@ -356,9 +477,11 @@ def process_model(
     expected_volume = volume_before - cavity_volume
     if drain_holes:
         with timed("Drain holes"):
-            cut_drain_holes(shell, positions, bottom_z, floor_z, hole_radius)
+            cut_drain_holes(shell, holes, hole_radius)
         # Each hole removes a cylinder as long as the bottom wall is thick
-        expected_volume -= len(positions) * math.pi * hole_radius**2 * (floor_z - bottom_z)
+        expected_volume -= sum(
+            math.pi * hole_radius**2 * (hole["floor_z"] - hole["wall_bottom"]) for hole in holes
+        )
 
     with timed("Result check"):
         problems = check_result(
@@ -367,9 +490,7 @@ def process_model(
             outer_max,
             expected_volume,
             non_manifold_before + cavity_non_manifold,
-            positions,
-            bottom_z,
-            floor_z,
+            holes,
         )
     for problem in problems:
         logger.error("Result check failed: %s", problem)
@@ -387,9 +508,7 @@ def check_result(
     outer_max,
     expected_volume,
     non_manifold_before,
-    positions,
-    bottom_z,
-    floor_z,
+    holes,
 ):
     """Look for signs of a broken result in the hollowed model: return the problems found."""
     coords = geometry.vertex_coordinates(shell)
@@ -407,9 +526,10 @@ def check_result(
             f"expected (+/-{VOLUME_TOLERANCE:.0%})"
         )
     tree = mesh_tree(shell)
-    for number, (x, y) in enumerate(positions, start=1):
+    for number, hole in enumerate(holes, start=1):
         # The middle of the bottom wall must be air: the hole goes through it
-        if point_in_mesh(tree, (x, y, (bottom_z + floor_z) / 2)):
+        middle = (hole["wall_bottom"] + hole["floor_z"]) / 2
+        if point_in_mesh(tree, (hole["x"], hole["y"], middle)):
             problems.append(f"drain hole {number} does not go through the bottom wall")
 
     logger.info(
@@ -469,6 +589,20 @@ if __name__ == "__main__":
         help="Do not cut the two drain holes in the bottom",
     )
     parser.add_argument(
+        "--merge-pieces",
+        action="store_true",
+        help="Merge the pieces of the model into a single solid before hollowing it, for a "
+        "model made of overlapping pieces (the outer surface is replaced by a voxel remesh "
+        "of the union of the pieces)",
+    )
+    parser.add_argument(
+        "--merge-voxel-size",
+        type=float,
+        default=DEFAULT_MERGE_VOXEL_SIZE,
+        help="Size of the voxels used to merge the pieces in mm (default: "
+        f"{DEFAULT_MERGE_VOXEL_SIZE})",
+    )
+    parser.add_argument(
         "-r",
         "--hole-radius",
         type=float,
@@ -493,6 +627,8 @@ if __name__ == "__main__":
                 voxel_size=args.voxel_size,
                 drain_holes=not args.no_drain_holes,
                 hole_radius=args.hole_radius,
+                merge=args.merge_pieces,
+                merge_voxel_size=args.merge_voxel_size,
             )
     except Exception:
         # Blender only prints the traceback to stderr: keep it in the log file too
