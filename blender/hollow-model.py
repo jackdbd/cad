@@ -36,6 +36,10 @@ CUTTER_VERTICES = 64  # Vertices of each cylinder subtracted from the model
 # voxels cannot resolve the narrowest crevices of a model, so a few spots are thinner than
 # wanted.
 MIN_WALL_RATIO = 0.5
+# If more than this share of the points of the cavity are thinner than that, the cavity
+# breaks through the wall: it is an error, not a warning. It happens with a model that is not
+# a single closed solid (several overlapping pieces, for example).
+MAX_THIN_SHARE = 0.02
 # Allowed difference between the volume of the hollowed model and the expected one, as a
 # fraction of the expected one
 VOLUME_TOLERANCE = 0.01
@@ -187,8 +191,36 @@ def cut_drain_holes(shell, positions, bottom_z, floor_z, hole_radius):
     bpy.data.objects.remove(cutter, do_unlink=True)
 
 
+def count_pieces(mesh):
+    """Return the number of separate pieces of a mesh (sets of connected faces)."""
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.verts.ensure_lookup_table()
+    seen = set()
+    pieces = 0
+    for vert in bm.verts:
+        if vert.index in seen:
+            continue
+        pieces += 1
+        seen.add(vert.index)
+        stack = [vert]
+        while stack:
+            current = stack.pop()
+            for edge in current.link_edges:
+                other = edge.other_vert(current)
+                if other.index not in seen:
+                    seen.add(other.index)
+                    stack.append(other)
+    bm.free()
+    return pieces
+
+
 def check_wall_thickness(outer_tree, cavity_coords, wall_thickness):
-    """Log how thick the wall is: the distance of the cavity surface to the outer surface."""
+    """Log how thick the wall is: the distance of the cavity surface to the outer surface.
+
+    Return the share of the points of the cavity that are thinner than MIN_WALL_RATIO times
+    the wanted thickness.
+    """
     distances = np.array(
         [outer_tree.find_nearest(mathutils.Vector(p))[3] for p in cavity_coords]
     )
@@ -213,6 +245,7 @@ def check_wall_thickness(outer_tree, cavity_coords, wall_thickness):
             distances.min(),
             *spot,
         )
+    return float(thin.mean())
 
 
 def process_model(
@@ -241,13 +274,22 @@ def process_model(
     outer_min, outer_max = outer_coords.min(axis=0), outer_coords.max(axis=0)
     with timed("Input mesh analysis"):
         non_manifold_before, volume_before = common.analyze_mesh(outer.data)
+        pieces = count_pieces(outer.data)
     logger.info(
-        "Input mesh: %d triangle(s), %d non-manifold edge(s), size %s mm, volume %.0f mm3",
+        "Input mesh: %d triangle(s), %d non-manifold edge(s), %d piece(s), size %s mm, "
+        "volume %.0f mm3",
         len(outer.data.polygons),
         non_manifold_before,
+        pieces,
         " x ".join("%.1f" % v for v in outer_max - outer_min),
         volume_before,
     )
+    if pieces > 1:
+        logger.warning(
+            "The model is made of %d separate pieces: if they overlap, the cavity cannot be "
+            "computed reliably",
+            pieces,
+        )
 
     # The cavity: the surface of the model moved inwards by the thickness of the wall
     with timed("Cavity"):
@@ -268,7 +310,19 @@ def process_model(
     )
 
     with timed("Wall thickness check"):
-        check_wall_thickness(mesh_tree(outer), cavity_coords, wall_thickness)
+        thin_share = check_wall_thickness(mesh_tree(outer), cavity_coords, wall_thickness)
+    if thin_share > MAX_THIN_SHARE:
+        fail(
+            "%.1f%% of the points of the cavity are less than %.2f mm from the outer surface "
+            "(the limit is %.0f%%): the cavity breaks through the wall. The model is probably "
+            "not a single closed solid (it has %d piece(s) and %d non-manifold edge(s)): "
+            "merge its pieces first",
+            100 * thin_share,
+            MIN_WALL_RATIO * wall_thickness,
+            100 * MAX_THIN_SHARE,
+            pieces,
+            non_manifold_before,
+        )
 
     positions = []
     if drain_holes:
